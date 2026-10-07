@@ -64,9 +64,23 @@ async def amain(argv: Optional[list[str]] = None) -> int:
     return 0 if ok else 1
 
 
+def _launched_by_double_click(argv: Optional[list[str]]) -> bool:
+    """打包後的 exe 沒帶任何參數 → 多半是直接雙擊開啟，結束時視窗會立刻關閉"""
+    return getattr(sys, "frozen", False) and argv is None and len(sys.argv) == 1
+
+
 def main(argv: Optional[list[str]] = None) -> None:
+    code = 1
     try:
-        sys.exit(asyncio.run(amain(argv)))
+        code = asyncio.run(amain(argv))
     except KeyboardInterrupt:
         print("已強制中斷；重新執行相同指令可從進度續傳")
-        sys.exit(130)
+        code = 130
+    except Exception as e:
+        print(f"發生未預期的錯誤：{type(e).__name__}: {e}")
+    if _launched_by_double_click(argv):
+        try:
+            input("\n按 Enter 關閉視窗…")
+        except (EOFError, KeyboardInterrupt):
+            pass
+    sys.exit(code)
