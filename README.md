@@ -1,0 +1,213 @@
+# StreamDownloader
+
+串流下載器：支援 **HLS（m3u8）** 與 **DASH（mpd）**，可下載直播與存檔，並能**回溯**播放清單以外、伺服器上仍存在的較早片段。內建 ZAN-LIVE 網站支援，其他網站可用瀏覽器監控自動找出串流。
+
+## 功能
+
+| 功能 | 說明 |
+|---|---|
+| HLS | 主播放清單畫質選擇、AES-128 / SAMPLE-AES 解密（含未提供 IV 時依序號推算）、EXT-X-MAP、BYTERANGE |
+| DASH | SegmentTemplate（`$Number$` / `$Time$` / SegmentTimeline）、SegmentList、SegmentBase；影像與音訊分軌下載後合併 |
+| 直播 | 持續監控播放清單 / MPD，直到直播結束或連續沒有新片段 |
+| 回溯（自動探測） | 由片段網址推出模板，探測播放清單以外的較早片段（詳見下方） |
+| CENC 解密 | DASH 加密內容可用 `--key` 提供金鑰，或自動向 ClearKey 授權伺服器取得（詳見「加密內容與 DRM」） |
+| 斷點續傳 | 每條串流的片段狀態存在 `store.json`，重新執行相同指令即可接續 |
+| 瀏覽器監控 | 沒有網址或網站不支援時，開啟瀏覽器偵測頁面中的 m3u8 / mpd，逐一詢問是否下載 |
+| ZAN-LIVE | 自動登入、多視角、等待開播、附件（留言、禮物、票券、參演者、圖片） |
+| 下載工具 | httpx（預設）、curl、瀏覽器內下載、aria2 |
+| 合併 | ffmpeg 合併為 mp4 / m4a（不重新編碼） |
+
+## 安裝
+
+### 方式一：執行檔（Windows）
+
+從 [Releases](../../releases) 下載 `StreamDownloader.exe`。已內嵌 Python 與 ffmpeg，不需另外安裝。
+
+- 需要瀏覽器的功能（ZAN-LIVE、瀏覽器監控）需安裝 Google Chrome
+- 執行檔未簽章，第一次執行時 SmartScreen 可能警告，點「其他資訊」→「仍要執行」
+
+### 方式二：原始碼
+
+需要 Python 3.11 以上與 ffmpeg（加入 PATH，或以 `--ffmpeg` 指定）。
+
+```bash
+pip install -r requirements.txt
+python -m src --help
+```
+
+## 使用方式
+
+### 直接雙擊執行檔
+
+會詢問網址；直接按 Enter 則開啟瀏覽器，自行前往播放頁面。結束後按 Enter 關閉視窗。
+
+### 命令列
+
+```bash
+# HLS / DASH 串流網址
+StreamDownloader.exe "https://example.com/live/master.m3u8" -o downloads -t 標題
+StreamDownloader.exe "https://example.com/stream/manifest.mpd" -o downloads
+
+# 需要 Referer / Cookies 的串流
+StreamDownloader.exe "https://example.com/index.m3u8" --referer "https://example.com/" --cookies cookies.txt
+
+# 一般網頁：開啟瀏覽器監控串流
+StreamDownloader.exe "https://example.com/watch/123"
+
+# ZAN-LIVE（detail 頁或直播間網址）
+StreamDownloader.exe "https://www.zan-live.com/zh-TW/live/detail/10782"
+```
+
+以原始碼執行時，把 `StreamDownloader.exe` 換成 `python -m src`。
+
+### 停止與續傳
+
+- 第一次 **Ctrl+C**：停止追蹤直播的新片段，等待進行中的下載完成後照常合併
+- 第二次 **Ctrl+C**：立即中斷
+- 中斷或有片段失敗時，重新執行相同指令即可從進度接續
+
+## 支援的網站與模式
+
+提取器依下列順序比對網址：
+
+1. **網站專用**：目前為 ZAN-LIVE
+2. **直接串流網址**：網址為 `.m3u8`、`.mpd` 或一般媒體檔（mp4 / mp3 等）
+3. **瀏覽器監控**：以上都不符合，或沒有輸入網址
+
+### ZAN-LIVE
+
+- 帳密：執行時於終端機輸入（密碼不顯示），或設定環境變數，避免密碼出現在指令與 `.cmd` 檔中：
+
+  ```powershell
+  # PowerShell
+  $env:STREAMDL_ACCOUNT="信箱"
+  $env:STREAMDL_PASSWORD="密碼"
+  ```
+
+  ```bat
+  :: 命令提示字元 / .cmd
+  set STREAMDL_ACCOUNT=信箱
+  set STREAMDL_PASSWORD=密碼
+  ```
+
+  帳號直接按 Enter 則改為在瀏覽器視窗中手動登入（多視角需每個視窗各登入一次）。
+- **輸入 detail 頁**：有直播中的票就下載全部視角；否則選擇最早開演的一組，並等待開播。
+- **輸入直播間網址**：只下載該視角。
+- 每個視角都會**各自登入、開一個專屬瀏覽器進入直播間**，再以該瀏覽器的 session 下載；下載期間請勿關閉這些瀏覽器，也不要在其他地方開啟同一個直播間。
+- 附件存放在 `輸出資料夾/公演標題/視角名稱/`。
+
+### 瀏覽器監控
+
+1. 開啟瀏覽器後自行登入、前往播放頁面並開始播放。
+2. 偵測到 m3u8 / mpd 時會在終端機詢問「下載這個串流？」。
+3. 若前往的是支援的網站（如 ZAN-LIVE 頁面），會自動交給該網站的流程處理。
+4. 下載期間請保持瀏覽器開啟（cookies 由瀏覽器持續同步）。
+
+## 回溯（自動探測較早片段）
+
+許多直播的播放清單只列出最近幾分鐘的片段，但伺服器上更早的片段仍可下載。回溯會推出片段網址的規則，主動探測更早的片段：
+
+| 類型 | 推出模板的方式 | 探測方式 |
+|---|---|---|
+| HLS，序號連續 | 比對兩個片段網址中變動的數字，例如 `index_01669.ts` → `index_{num}.ts` | 分段二分搜尋，找出最早的有效序號 |
+| HLS，時間戳命名 | 同上，間距為時間戳差值 | 先試常見間距，再於範圍內並行掃描，並學習新的間距 |
+| DASH `$Number$` | 直接使用 MPD 的 SegmentTemplate | 二分搜尋 |
+| DASH `$Time$` | 直接使用 MPD 的 SegmentTemplate | 以 SegmentTimeline 中出現過的片段長度往前推，最後探測時間起點 |
+
+- 預設開啟；`--no-backfill` 關閉。
+- 片段網址中帶有每段不同的簽章時無法推出模板，會自動略過。
+- ZAN-LIVE 預設關閉回溯。
+
+## 加密內容與 DRM
+
+| 類型 | 能否下載 | 方式 |
+|---|---|---|
+| HLS AES-128 / SAMPLE-AES（金鑰為一般網址） | ✅ | 自動下載金鑰並解密 |
+| DASH ClearKey | ✅ | 自動向 MPD 中的授權伺服器取得明文金鑰 |
+| DASH / fMP4 CENC，且你持有金鑰 | ✅ | `--key KID:KEY`（支援 cenc、cbcs） |
+| Widevine / PlayReady / FairPlay | ❌ | 偵測到時直接回報，不會下載 |
+
+- **為什麼 Widevine 等無法下載**：這類 DRM 的金鑰只會交給瀏覽器或裝置內經過授權的解密模組（CDM），網頁與下載器都拿不到。取得金鑰需要規避技術保護措施，在台灣（著作權法第 80 條之 2）、日本、美國（DMCA §1201）皆屬違法，本工具不支援。
+- **`--key` 格式**：`KID:KEY`（32 位 hex，KID 可含連字號），多組以逗號分隔；只有一組且不知道 KID 時可只填 `KEY`。僅適用於你合法持有金鑰的內容（例如自己的影片、服務方提供的金鑰）。
+- 解密使用內建實作（cenc / cbcs）；若已安裝 Bento4 的 `mp4decrypt` 會優先使用。
+- 解密後會以 ffmpeg 試解前幾秒，若無法正常解碼會提示「金鑰可能錯誤」（AES-CTR 無法從密文判斷金鑰是否正確）。
+
+```bash
+StreamDownloader.exe "https://example.com/manifest.mpd" --key eb676abbcb345e96bbcf616630f1a3da:100b6c20940f779a4589152b57d2dacb
+```
+
+## 輸出資料夾結構
+
+```
+downloads/
+├── 標題.mp4                    合併完成的檔案
+└── backup/標題/
+    ├── playlists/              原始 m3u8 / mpd 備份
+    ├── fragments/              HLS 片段、金鑰、media.m3u8（可手動以 ffmpeg 合併）
+    ├── decrypted/              --decrypt 時的解密片段
+    ├── video/ audio/           DASH 各軌的片段、串接後的 video.mp4 / audio.mp4（加密時另有 *.decrypted.mp4）
+    └── store.json              片段下載狀態（續傳用）
+```
+
+確認合併結果無誤後，`backup/` 可以刪除。
+
+## 參數
+
+| 參數 | 預設 | 說明 |
+|---|---|---|
+| `url` | | 串流或網站網址；省略則詢問，直接 Enter 開啟瀏覽器 |
+| `-t`, `--title` | media | 無法從網站取得標題時使用的檔名 |
+| `-o`, `--output` | downloads | 輸出資料夾 |
+| `-q`, `--quality` | 0 | 畫質序號，0 為最高 |
+| `--referer` | | Referer 標頭（直接下載串流網址時使用） |
+| `--user-agent` | Chrome UA | User-Agent（使用瀏覽器時以瀏覽器實際值為準） |
+| `--cookies` | | cookies 檔案（Netscape 格式）或 `a=1; b=2` 字串 |
+| `--proxy` | | 代理伺服器，例如 `http://127.0.0.1:8080` |
+| `-f`, `--fetcher` | httpx | 下載工具：`httpx` / `curl` / `browser` / `aria2` |
+| `--concurrency` | 8 | 全域同時下載數 |
+| `--per-host` | 6 | 單一主機同時下載數 |
+| `--retries` | 5 | 每個片段的重試次數 |
+| `--backfill` / `--no-backfill` | 開 | 回溯較早片段 |
+| `--backfill-distance` | 10000 | 連續序號時每輪往回探測的距離 |
+| `--decrypt` / `--no-decrypt` | 關 | 下載中同步解密 HLS AES-128 片段 |
+| `--key` | | CENC 解密金鑰 `KID:KEY`，多組以逗號分隔（僅限合法持有的金鑰） |
+| `--merge` / `--no-merge` | 開 | 完成後以 ffmpeg 合併 |
+| `--ffmpeg` | ffmpeg | ffmpeg 路徑（exe 版已內嵌） |
+| `--live-idle-limit` | 10 | 直播連續幾次沒有新片段就視為結束 |
+| `--live-error-limit` | 10 | 連續幾次讀取播放清單失敗就視為結束 |
+| `--account` / `--password` | 環境變數 | 網站登入帳密（建議改用環境變數或執行時輸入） |
+| `--media` / `--no-media` | 開 | 下載影音串流 |
+| `--attachment` / `--no-attachment` | 開 | 下載附件 |
+| `--skip` | | 略過的網址或 ID，以逗號分隔 |
+| `--wait` / `--no-wait` | 開 | 直播尚未開始時等待開播 |
+| `--browser` | auto | `auto` 需要時才開、`always`、`never` 不開瀏覽器 |
+| `--chrome-path` | 自動尋找 | Chrome 執行檔路徑 |
+| `--headless` / `--no-headless` | 關 | 瀏覽器無頭模式（需要手動登入或操作時無效） |
+| `--aria2-rpc` / `--aria2-secret` | | aria2 RPC 位址與密鑰（需先啟動 `aria2c --enable-rpc`） |
+
+## 限制
+
+- Widevine / PlayReady / FairPlay 等 DRM 不支援（見「加密內容與 DRM」）。
+- CENC 解密不支援以 `saio` 指向 mdat 的輔助資訊格式，以及 `tfhd` 帶絕對 `base_data_offset` 的檔案（可安裝 `mp4decrypt` 處理）。
+- HLS 的獨立音軌（`EXT-X-MEDIA TYPE=AUDIO` 帶 URI）目前只下載影像軌；DASH 會自動下載影像與音訊。
+- DASH 多 Period（例如插入廣告）只下載第一個 Period（直播為目前的 Period）。
+- 字幕軌目前略過。
+- aria2 下載方式已實作但尚未實測。
+
+## 開發
+
+```bash
+pip install -r requirements.txt
+python -m pytest            # 測試（不需要網路、Chrome 或 ffmpeg）
+```
+
+打包執行檔（Windows）：
+
+```bash
+pip install pyinstaller
+python -m PyInstaller StreamDownloader.spec --noconfirm
+```
+
+會自動尋找 ffmpeg 並內嵌；可用環境變數 `FFMPEG_BIN` 指定。產出位於 `dist/StreamDownloader.exe`。
+
+架構說明（Session / Fetcher / Protocol / Backfill 分層、新增網站提取器的方式）請見 [docs/架構設計.md](docs/架構設計.md)。

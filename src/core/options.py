@@ -16,30 +16,32 @@ class Options(BaseModel):
     output: Path = Field(default=Path("downloads"), description="輸出資料夾")
 
     # 網路 / Session（只在直接下載串流網址時使用，網站提取器會自行決定）
-    referer: str = ""
-    user_agent: str = DEFAULT_USER_AGENT
+    referer: str = Field(default="", description="Referer 標頭（直接下載串流網址時使用）")
+    user_agent: str = Field(default=DEFAULT_USER_AGENT, description="User-Agent（使用瀏覽器時以瀏覽器實際值為準）")
     cookies: str = Field(default="", description="cookies 檔案路徑（Netscape 格式）或 'a=1; b=2' 字串")
-    proxy: Optional[str] = None
+    proxy: Optional[str] = Field(default=None, description="代理伺服器，例如 http://127.0.0.1:8080")
 
     # 下載
     fetcher: str = Field(default="httpx", description="httpx / aria2 / curl / browser")
     concurrency: int = Field(default=8, description="全域同時下載數")
     per_host: int = Field(default=6, description="單一主機同時下載數")
-    retries: int = 5
-    quality: int = Field(default=0, description="0 為最高畫質，數字越大畫質越低")
+    retries: int = Field(default=5, description="每個片段的重試次數")
+    quality: int = Field(default=0, description="畫質序號，0 為最高，數字越大畫質越低（HLS / DASH 影像軌）")
     backfill: bool = Field(default=True, description="嘗試回溯播放清單以外的較早片段")
     backfill_distance: int = Field(default=10000, description="連續序號時往回搜尋的最大距離")
     decrypt: bool = Field(default=False, description="下載中同步解密片段")
+    key: str = Field(default="", description="CENC 解密金鑰 KID:KEY（hex），多組以逗號分隔；只有一組且不知道 KID 時可只填 KEY。"
+                                              "僅適用於你合法持有金鑰的內容")
     merge: bool = Field(default=True, description="完成後以 ffmpeg 合併")
-    ffmpeg: str = "ffmpeg"
+    ffmpeg: str = Field(default="ffmpeg", description="ffmpeg 路徑（exe 版已內嵌）")
 
     # 直播監控
     live_idle_limit: int = Field(default=10, description="連續幾次輪詢沒有新片段就視為結束")
     live_error_limit: int = Field(default=10, description="連續幾次讀取播放清單失敗就視為結束")
 
     # aria2
-    aria2_rpc: str = "http://localhost:6800/jsonrpc"
-    aria2_secret: str = ""
+    aria2_rpc: str = Field(default="http://localhost:6800/jsonrpc", description="aria2 RPC 位址（--fetcher aria2）")
+    aria2_secret: str = Field(default="", description="aria2 RPC 密鑰")
 
     # 網站帳號（建議用環境變數 STREAMDL_ACCOUNT / STREAMDL_PASSWORD，避免密碼出現在指令或 .cmd 檔）
     account: str = Field(default_factory=lambda: os.environ.get("STREAMDL_ACCOUNT", ""), description="網站登入帳號")
@@ -54,8 +56,20 @@ class Options(BaseModel):
     # 瀏覽器
     browser: Literal["auto", "always", "never"] = Field(
         default="auto", description="auto：網站需要時才開；always：以瀏覽器維持 session；never：完全不開")
-    chrome_path: str = ""
-    headless: bool = False
+    chrome_path: str = Field(default="", description="Chrome 執行檔路徑，預設自動尋找已安裝的 Chrome")
+    headless: bool = Field(default=False, description="瀏覽器無頭模式（需要手動登入或操作時無效）")
+
+    @property
+    def key_map(self) -> dict[str, str]:
+        """{kid（小寫、無連字號）: key}；未指定 KID 的金鑰放在 "" """
+        result = {}
+        for item in self.key.split(","):
+            item = item.strip().replace("-", "").lower()
+            if not item:
+                continue
+            kid, _, key = item.rpartition(":")
+            result[kid] = key
+        return result
 
     @property
     def skip_set(self) -> set[str]:

@@ -38,6 +38,8 @@ class BackfillStrategy(ABC):
         ...
 
     @abstractmethod
-    async def discover(self, template: UrlTemplate, known: list[int], probe: Probe) -> list[int]:
-        """回傳比 known 最小值更早的有效序號（遞增排序，不含已知）"""
+    async def discover(self, template: UrlTemplate, known: list[int], probe: Probe,
+                       hints: Optional[list[int]] = None) -> list[int]:
+        """回傳比 known 最小值更早的有效序號（遞增排序，不含已知）
+        hints：已知可能的間距（例如 DASH SegmentTimeline 的片段長度），優先嘗試"""
         ...

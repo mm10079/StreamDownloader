@@ -86,6 +86,9 @@ class HlsProtocol(StreamProtocol):
         playlist = await self._load_media(text)
         if playlist is None or not playlist.segments:
             raise StreamError(f"媒體播放清單沒有片段: {self.media_url}")
+        drm = next((s.key for s in playlist.segments if s.key and s.key.drm), None)
+        if drm is not None:
+            raise StreamError(f"此串流受 DRM 保護（{drm.drm_name}），金鑰只提供給授權的解密模組，無法下載解密")
         await log.info(f"[{self.paths.title}] 媒體播放清單：{self.media_url}"
                        f"（{'直播' if playlist.is_live else 'VOD'}，{len(playlist.segments)} 個片段）")
         return playlist
@@ -275,7 +278,7 @@ class HlsProtocol(StreamProtocol):
         try:
             if seg.init_url:
                 seg.init = await self._ensure_aux(seg.init_url, "init", Path(url_basename(seg.init_url)).suffix or ".mp4")
-            if seg.encryption and seg.encryption.method == "AES-128":
+            if seg.encryption and seg.encryption.method in ("AES-128", "SAMPLE-AES"):
                 seg.encryption.local = await self._ensure_aux(seg.encryption.uri, "key", ".key")
 
             if not dest.exists():
@@ -320,7 +323,7 @@ class HlsProtocol(StreamProtocol):
                 if not res.ok:
                     raise StreamError(f"{prefix} 下載失敗：{url}（{res.error or res.status}）")
                 if prefix == "key":
-                    await log.info(f"[{self.paths.title}] AES-128 金鑰：{dest.read_bytes().hex()}")
+                    await log.info(f"[{self.paths.title}] 金鑰：{dest.read_bytes().hex()}")
             if prefix == "key":
                 self._key_bytes[url] = dest.read_bytes()
         return name
@@ -343,7 +346,10 @@ class HlsProtocol(StreamProtocol):
         local = self.paths.fragments / "media.m3u8"
         local.write_text(self._render(done, with_keys=True, prefix=""), encoding="utf-8")
         playlist = local
-        if self.ctx.options.decrypt and any(s.encryption for s in done):
+        methods = {s.encryption.method for s in done if s.encryption}
+        if self.ctx.options.decrypt and "SAMPLE-AES" in methods:
+            await log.warning(f"[{self.paths.title}] SAMPLE-AES 只加密部分資料，無法逐段解密；合併時由 ffmpeg 解密")
+        elif self.ctx.options.decrypt and methods:
             playlist = self.paths.decrypted / "media.m3u8"
             playlist.write_text(self._render(done, with_keys=False, prefix="../fragments/"), encoding="utf-8")
 
@@ -367,9 +373,10 @@ class HlsProtocol(StreamProtocol):
                 lines.append(f'#EXT-X-MAP:URI="{prefix}{s.init}"')
                 last_init = s.init
             if with_keys:
-                key = (s.encryption.local, s.encryption.iv) if s.encryption else None
+                key = (s.encryption.method, s.encryption.local, s.encryption.iv) if s.encryption else None
                 if key != last_key:
-                    lines.append(f'#EXT-X-KEY:METHOD=AES-128,URI="{key[0]}",IV=0x{key[1]}' if key else "#EXT-X-KEY:METHOD=NONE")
+                    lines.append(f'#EXT-X-KEY:METHOD={key[0]},URI="{key[1]}",IV=0x{key[2]}' if key
+                                 else "#EXT-X-KEY:METHOD=NONE")
                     last_key = key
             lines.append(f"#EXTINF:{s.duration or self.store.data.target_duration:.3f},")
             # 解密版清單中，未加密片段仍放在 fragments 資料夾
