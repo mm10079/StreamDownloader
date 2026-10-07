@@ -42,10 +42,38 @@ class Key:
     method: str = "NONE"
     uri: str = ""
     iv: Optional[str] = None        # 播放清單原始值（hex，無 0x）
+    keyformat: str = "identity"
 
     @property
     def encrypted(self) -> bool:
         return self.method not in ("NONE", "")
+
+    @property
+    def drm(self) -> bool:
+        """金鑰只交給授權解密模組（FairPlay / Widevine / PlayReady）→ 無法下載解密"""
+        return self.encrypted and (
+            self.method in ("SAMPLE-AES-CTR", "SAMPLE-AES-CENC")
+            or self.keyformat.lower() not in ("", "identity")
+            or not self.uri.lower().startswith(("http://", "https://")))
+
+    @property
+    def drm_name(self) -> str:
+        fmt, uri = self.keyformat.lower(), self.uri.lower()
+        if uri.startswith("skd:") or "streamingkeydelivery" in fmt:
+            return "FairPlay"
+        if "edef8ba9" in fmt:
+            return "Widevine"
+        if "9a04f079" in fmt or "playready" in fmt:
+            return "PlayReady"
+        return self.keyformat or self.method
+
+
+def choose_key(keys: list[Key]) -> Optional[Key]:
+    """同一組片段可能同時列出多個 EXT-X-KEY（不同 KEYFORMAT）：優先可直接下載金鑰的 identity"""
+    usable = [k for k in keys if k.encrypted and not k.drm]
+    if usable:
+        return usable[0]
+    return next((k for k in keys if k.encrypted), None)
 
 
 @dataclass
@@ -111,6 +139,8 @@ def parse_master(text: str, url: str) -> MasterPlaylist:
 def parse_media(text: str, url: str) -> MediaPlaylist:
     pl = MediaPlaylist(url=url)
     key: Optional[Key] = None
+    key_group: list[Key] = []
+    key_group_open = False
     map_uri: Optional[str] = None
     duration = 0.0
     pdt: Optional[str] = None
@@ -139,11 +169,22 @@ def parse_media(text: str, url: str) -> MediaPlaylist:
             elif tag == "#EXT-X-KEY":
                 attrs = parse_attrs(value)
                 iv = attrs.get("IV")
-                key = Key(
+                raw_uri = attrs.get("URI", "")
+                new = Key(
                     method=attrs.get("METHOD", "NONE"),
-                    uri=urljoin(url, attrs["URI"]) if attrs.get("URI") else "",
+                    uri=urljoin(url, raw_uri) if raw_uri.startswith(("http", "/", ".")) or "://" not in raw_uri
+                    else raw_uri,           # skd:// data: 等不做網址解析
                     iv=iv[2:] if iv and iv.lower().startswith("0x") else iv,
+                    keyformat=attrs.get("KEYFORMAT", "identity"),
                 )
+                if new.method == "NONE":
+                    key_group = []
+                elif key_group_open:
+                    key_group.append(new)       # 連續的 EXT-X-KEY 屬於同一組
+                else:
+                    key_group = [new]
+                key_group_open = True
+                key = choose_key(key_group)
             elif tag == "#EXT-X-MAP":
                 attrs = parse_attrs(value)
                 map_uri = urljoin(url, attrs["URI"]) if attrs.get("URI") else None
@@ -161,6 +202,7 @@ def parse_media(text: str, url: str) -> MediaPlaylist:
             continue
 
         seen_segment = True
+        key_group_open = False
         pl.segments.append(HlsSegment(
             uri=urljoin(url, line), raw_uri=line, duration=duration,
             media_sequence=pl.media_sequence + seq_offset,

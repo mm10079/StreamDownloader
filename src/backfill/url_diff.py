@@ -42,10 +42,12 @@ def build_template(first: str, second: str) -> Optional[UrlTemplate]:
 
 
 class UrlDiffBackfill(BackfillStrategy):
-    def __init__(self, distance: int = 10000, batch: int = 300, max_rounds: int = 10000):
+    def __init__(self, distance: int = 10000, batch: int = 300, max_rounds: int = 10000,
+                 max_scan: Optional[int] = None):
         self.distance = distance        # 連續序號時每輪往回探測的距離
         self.batch = batch              # 非連續時一次並行探測的數量
         self.max_rounds = max_rounds
+        self.max_scan = max_scan        # 猜測失敗時範圍掃描的上限；None 不限（HLS 時間戳命名需要掃描）
 
     def build(self, urls: list[str]) -> Optional[UrlTemplate]:
         for i in range(len(urls) - 1):
@@ -54,14 +56,15 @@ class UrlDiffBackfill(BackfillStrategy):
                 return tpl
         return None
 
-    async def discover(self, template: UrlTemplate, known: list[int], probe: Probe) -> list[int]:
+    async def discover(self, template: UrlTemplate, known: list[int], probe: Probe,
+                       hints: Optional[list[int]] = None) -> list[int]:
         if not known:
             return []
         lowest = min(known)
-        if template.space == 1:
+        if template.space == 1 and not hints:
             start = await self._continuous_start(lowest, probe)
             return list(range(start, lowest))
-        return await self._guess_chain(lowest, template.space, probe)
+        return await self._guess_chain(lowest, template.space, probe, list(hints or []))
 
     # ---------- 連續序號：二分搜尋下界 ----------
     async def _continuous_start(self, lowest: int, probe: Probe) -> int:
@@ -91,12 +94,15 @@ class UrlDiffBackfill(BackfillStrategy):
         hits = [n for n, ok in zip(candidates, results) if ok]
         return max(hits) if hits else None
 
-    async def _guess_chain(self, current: int, space: int, probe: Probe) -> list[int]:
-        deltas = next((list(d) for d in COMMON_DELTAS if space in d), [space])
+    async def _guess_chain(self, current: int, space: int, probe: Probe, hints: list[int]) -> list[int]:
+        common = next((list(d) for d in COMMON_DELTAS if space in d), [space])
+        deltas = list(dict.fromkeys(hints + common))
         found: list[int] = []
         for _ in range(self.max_rounds):
             hit = await self._first_valid([current - d for d in deltas if current - d >= 0], probe)
             if hit is None:
+                if self.max_scan is not None and space * 3 // 2 > self.max_scan:
+                    break       # 間距太大（例如高 timescale 的 $Time$），範圍掃描請求量過大，只依靠猜測
                 window_low = max(0, current - space * 3 // 2)
                 for start in range(current - 1, window_low - 1, -self.batch):
                     chunk = list(range(start, max(window_low - 1, start - self.batch), -1))
