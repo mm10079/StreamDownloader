@@ -18,6 +18,7 @@ class ScriptedBrowser:
         self.script = list(script)
         self.step = ("", [])
         self.visited = []
+        self.closed = False
 
     def goto(self, url):
         self.visited.append(url)
@@ -44,13 +45,13 @@ class ScriptedBrowser:
         return "我的直播 / 2026"
 
     def close(self):
-        pass
+        self.closed = True
 
 
 def make_ctx(fake, **opts):
     ctx = ExtractContext(options=Options(**opts), sessions=SessionManager())
 
-    async def new_browser(headless=None):
+    async def new_browser(headless=None, profile=False):
         ctx.browsers.append(fake)
         return fake
 
@@ -106,9 +107,10 @@ def test_hands_off_to_site_extractor(monkeypatch):
     monkeypatch.setattr(ZanLiveExtractor, "extract", fake_extract)
     zan_url = "https://www.zan-live.com/zh-TW/live/detail/10782"
     browser = ScriptedBrowser([("https://www.google.com/", []), (zan_url, [])])
-    job = asyncio.run(BrowserWatchExtractor().extract("", make_ctx(browser)))
+    ctx = make_ctx(browser)
+    job = asyncio.run(BrowserWatchExtractor().extract("", ctx))
     assert job.title == "zan" and called["url"] == zan_url
-    assert browser.visited[-1] == "about:blank"     # 監控瀏覽器離開頁面，避免干擾直播間
+    assert browser.closed and browser not in ctx.browsers    # 交接後關閉監控瀏覽器，不留空白視窗
 
 
 def test_stop_event_ends_watch():

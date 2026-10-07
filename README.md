@@ -14,6 +14,8 @@
 | 斷點續傳 | 每條串流的片段狀態存在 `store.json`，重新執行相同指令即可接續 |
 | 瀏覽器監控 | 沒有網址或網站不支援時，開啟瀏覽器偵測頁面中的 m3u8 / mpd，逐一詢問是否下載 |
 | ZAN-LIVE | 自動登入、多視角、等待開播、附件（留言、禮物、票券、參演者、圖片） |
+| SINGULAR LIVE | 已購票券過濾、直播 / 存檔、日本 IP 限定提示、附件（活動資料、播放器參數、封面、章節截圖） |
+| Twitter（X）Space | 直接下載 Space 的 m3u8，輸出 m4a，資料夾以播出日期命名 |
 | 下載工具 | httpx（預設）、curl、瀏覽器內下載、aria2 |
 | 合併 | ffmpeg 合併為 mp4 / m4a（不重新編碼） |
 
@@ -62,6 +64,8 @@ StreamDownloader.exe "https://www.zan-live.com/zh-TW/live/detail/10782"
 
 ### 停止與續傳
 
+- 全部任務結束後，若還有開啟的瀏覽器（ZAN-LIVE、SINGULAR LIVE、瀏覽器監控），會保持開啟並等待按 Enter 才關閉，方便繼續觀看直播到結束；`--no-keep-browser` 則直接關閉。
+
 - 第一次 **Ctrl+C**：停止追蹤直播的新片段，等待進行中的下載完成後照常合併
 - 第二次 **Ctrl+C**：立即中斷
 - 中斷或有片段失敗時，重新執行相同指令即可從進度接續
@@ -70,7 +74,7 @@ StreamDownloader.exe "https://www.zan-live.com/zh-TW/live/detail/10782"
 
 提取器依下列順序比對網址：
 
-1. **網站專用**：目前為 ZAN-LIVE
+1. **網站專用**：ZAN-LIVE、SINGULAR LIVE、Twitter Space
 2. **直接串流網址**：網址為 `.m3u8`、`.mpd` 或一般媒體檔（mp4 / mp3 等）
 3. **瀏覽器監控**：以上都不符合，或沒有輸入網址
 
@@ -94,7 +98,57 @@ StreamDownloader.exe "https://www.zan-live.com/zh-TW/live/detail/10782"
 - **輸入 detail 頁**：有直播中的票就下載全部視角；否則選擇最早開演的一組，並等待開播。
 - **輸入直播間網址**：只下載該視角。
 - 每個視角都會**各自登入、開一個專屬瀏覽器進入直播間**，再以該瀏覽器的 session 下載；下載期間請勿關閉這些瀏覽器，也不要在其他地方開啟同一個直播間。
-- 附件存放在 `輸出資料夾/公演標題/視角名稱/`。
+- 附件存放在 `輸出資料夾/公演標題/視角名稱/`：`images/`（logos、artists、gifts）、`raw comments/`（留言）、`web info/tickets/`（票券、參演者、Banner）、`web info/attachments/`（禮物 JSON）。
+
+### SINGULAR LIVE
+
+```bash
+StreamDownloader.exe "https://singular-live.thinkr.jp/zh/event/detail/活動ID"
+```
+
+- 支援活動資訊頁與直播間網址（`/play/票券ID/內容ID`）。
+- 會開啟瀏覽器並自動登入：帳密來自環境變數 `STREAMDL_ACCOUNT` / `STREAMDL_PASSWORD`、`--account` / `--password`，或執行時於終端機輸入；帳號直接 Enter、或自動登入失敗時，改為在瀏覽器中手動登入，登入後自動繼續。
+- 登入頁有 Cloudflare Turnstile 人機驗證，按鈕要等驗證通過才能點擊：程式會等待驗證自然完成後再登入；若瀏覽器中出現勾選框，請手動完成。程式不會繞過人機驗證。
+- 只下載**已購買**的票券（以「已購買票券」API 確認）；未購買、尚未建立直播間（`tickets` 為空）、直播結束但存檔尚未提供時會說明原因。
+- 直播已結束且有存檔時，自動改下載存檔。尚未開播時等待開放（`--no-wait` 不等待）。
+- **僅限日本 IP**：進入直播間時若被導回資訊頁（「本活動僅限日本國內播放」），請開啟日本 VPN，並在瀏覽器中**手動進入直播間**，程式偵測到後自動繼續。
+- **VPN 注意**：瀏覽器擴充功能型 VPN 只影響瀏覽器，下載器本身的連線不會經過它。影片若也限制日本 IP，請改用系統層級的 VPN、以 `--proxy` 指定日本代理，或加上 `-f browser` 讓下載經由瀏覽器進行（較慢）。
+- 附件與 ZAN-LIVE 相同布局，存放在 `輸出資料夾/活動標題/內容名稱/`：
+
+  ```
+  內容名稱/
+  ├── images/                 cover、poster（暫停畫面）、seekpreview_*（縮圖預覽）
+  │   └── slides/             章節截圖
+  └── web info/
+      ├── tickets/            uliza_params.json（播放器參數）
+      └── attachments/        event.json（活動資料 data-event）
+  ```
+- 下載期間請保持瀏覽器開啟。
+
+### Twitter（X）Space
+
+```bash
+StreamDownloader.exe "https://prod-fastly-….video.pscp.tv/…/audio-space/master_playlist.m3u8" -t 標題
+```
+
+- 輸入 Space 的 m3u8 網址（pscp.tv）；目前不支援直接輸入 x.com 的 Space 頁面（可用瀏覽器監控取得 m3u8）。
+- 未指定 `-t` 時會詢問標題，直接 Enter 使用「Twitter Space」。
+- 輸出：`輸出資料夾/{播出日期} - Twitter Space #{標題}/{標題}.m4a`，播出日期取自播放清單的開始時間。
+- 自動帶上 `Referer: https://x.com/`；可用 `--referer` 覆寫。
+
+### 固定瀏覽器設定檔（`--chrome-profile`）
+
+預設每次開啟的瀏覽器都是全新的暫存設定檔。指定固定的設定檔資料夾後，**登入狀態與自行安裝的擴充功能（例如 VPN）都會保留**：
+
+```bash
+StreamDownloader.exe "網址" --chrome-profile "%LOCALAPPDATA%\StreamDownloader\chrome"
+```
+
+1. 第一次使用時，在開啟的瀏覽器中到 Chrome 線上應用程式商店安裝需要的擴充功能並完成設定。
+2. 之後每次執行都會沿用。
+3. 同一個設定檔同時只能由一個瀏覽器使用：執行前請關閉以該設定檔開啟的 Chrome；ZAN-LIVE 多視角時只有第一個瀏覽器使用固定設定檔。
+
+> 選擇 VPN 擴充功能時請留意隱私：部分免費 VPN 擴充功能（例如 Urban VPN Proxy）曾被揭露會蒐集並轉售使用者的瀏覽資料，而此瀏覽器會登入你的購票帳號。
 
 ### 瀏覽器監控
 
@@ -182,7 +236,9 @@ downloads/
 | `--wait` / `--no-wait` | 開 | 直播尚未開始時等待開播 |
 | `--browser` | auto | `auto` 需要時才開、`always`、`never` 不開瀏覽器 |
 | `--chrome-path` | 自動尋找 | Chrome 執行檔路徑 |
+| `--chrome-profile` | | 固定的瀏覽器設定檔資料夾（保留登入與擴充功能） |
 | `--headless` / `--no-headless` | 關 | 瀏覽器無頭模式（需要手動登入或操作時無效） |
+| `--keep-browser` / `--no-keep-browser` | 開 | 全部任務結束後保持瀏覽器開啟，按 Enter 才關閉 |
 | `--aria2-rpc` / `--aria2-secret` | | aria2 RPC 位址與密鑰（需先啟動 `aria2c --enable-rpc`） |
 
 ## 限制

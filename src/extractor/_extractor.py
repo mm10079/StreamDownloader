@@ -41,17 +41,38 @@ class ExtractContext:
         base.update(headers or {})
         return self.sessions.create(headers=base, proxy=self.options.proxy)
 
-    async def new_browser(self, headless: Optional[bool] = None) -> "BaseBrowser":
-        """開啟瀏覽器；在整個下載流程結束時由 Pipeline 統一關閉（下載期間可能仍需要它維持 session）"""
+    async def new_browser(self, headless: Optional[bool] = None, profile: bool = False) -> "BaseBrowser":
+        """開啟瀏覽器；在整個下載流程結束時由 Pipeline 統一關閉（下載期間可能仍需要它維持 session）
+
+        profile=True：使用 --chrome-profile 指定的固定設定檔（保留登入與擴充功能）。
+        同一設定檔同時只能由一個 Chrome 使用，已被占用時改用暫存設定檔。"""
+        from pathlib import Path
         from ..driver import BrowserType, get_browser_class
+        from ..utils import log
         browser = get_browser_class(BrowserType.UC)()
         if self.options.chrome_path:
             from undetected_chromedriver import ChromeOptions
             browser.options = ChromeOptions()
             browser.options.binary_location = self.options.chrome_path
+        if profile and self.options.chrome_profile:
+            if any(getattr(b, "user_data_dir", None) for b in self.browsers):
+                await log.warning("固定設定檔已由另一個瀏覽器使用，這個瀏覽器改用暫存設定檔")
+            else:
+                path = Path(self.options.chrome_profile).expanduser().resolve()
+                path.mkdir(parents=True, exist_ok=True)
+                browser.user_data_dir = str(path)
         await asyncio.to_thread(browser.start, self.options.headless if headless is None else headless)
         self.browsers.append(browser)
         return browser
+
+    async def close_browser(self, browser: "BaseBrowser") -> None:
+        """提前關閉單一瀏覽器（例如監控用瀏覽器交接後）"""
+        if browser in self.browsers:
+            self.browsers.remove(browser)
+        try:
+            await asyncio.to_thread(browser.close)
+        except Exception:
+            pass
 
     async def close(self) -> None:
         for browser in self.browsers:

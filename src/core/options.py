@@ -57,7 +57,11 @@ class Options(BaseModel):
     browser: Literal["auto", "always", "never"] = Field(
         default="auto", description="auto：網站需要時才開；always：以瀏覽器維持 session；never：完全不開")
     chrome_path: str = Field(default="", description="Chrome 執行檔路徑，預設自動尋找已安裝的 Chrome")
+    chrome_profile: str = Field(default="", description="固定的瀏覽器設定檔資料夾：保留登入狀態與自行安裝的擴充功能（如 VPN）；"
+                                                         "同一時間只能由一個瀏覽器使用")
     headless: bool = Field(default=False, description="瀏覽器無頭模式（需要手動登入或操作時無效）")
+    keep_browser: bool = Field(default=True, description="全部任務結束後保持瀏覽器開啟（可繼續觀看直播），按 Enter 才關閉；"
+                                                         "僅在終端機互動模式下有效")
 
     @property
     def key_map(self) -> dict[str, str]:

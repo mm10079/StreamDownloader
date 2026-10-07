@@ -176,7 +176,7 @@ def run_zan(server, tmp_path, url, before_execute=None, **opt_kwargs):
         opts = Options(output=tmp_path, account="me@example.com", password="pw", merge=False, **opt_kwargs)
         pipe = Pipeline(opts)
 
-        async def new_browser(headless=None):
+        async def new_browser(headless=None, profile=False):
             b = FakeBrowser()
             browsers.append(b)
             pipe.ctx.browsers.append(b)
@@ -215,6 +215,8 @@ def test_each_angle_has_own_login_and_browser(zan_server, tmp_path):
     assert (room / "images" / "artists" / "artist.jpg").exists()
     assert (room / "images" / "gifts" / "gift_g1.png").exists()
     assert (room / "raw comments" / "視角 5752" / "1.json").exists()
+    assert (room / "web info" / "attachments" / "normalGifts.json").exists()   # 禮物 JSON 放在 attachments
+    assert not (room / "web info" / "gifts").exists()
     tickets = json.loads((room / "web info" / "tickets" / "liveTickets.json").read_text(encoding="utf-8"))
     assert tickets[0]["id"] == "5752"
 

@@ -55,24 +55,49 @@ def interactive() -> bool:
     return bool(sys.stdin) and sys.stdin.isatty()
 
 
-async def ask(prompt: str, secret: bool = False, default: str = "") -> str:
+async def ask(prompt: str, secret: bool = False, default: str = "", stop=None) -> str:
     """在終端機詢問。先暫停 Rich 的進度畫面，否則畫面重繪會蓋掉提示（getpass 在 Windows 直接寫入主控台）。
-    非互動環境回傳 default。"""
+
+    - 非互動環境回傳 default
+    - stop（asyncio.Event）被設定時（例如 Ctrl+C）立即回傳 default
+    - 以 daemon 執行緒讀取輸入：放棄等待時，程式結束不會被卡在尚未完成的 input()
+    """
     import asyncio
     import getpass
+    import threading
     from .console import RichPusher
 
     if not interactive():
         return default
     await RichPusher.shutdown()     # 下次輸出 log 時會自動重新啟動
     reader = getpass.getpass if secret else input
+    loop = asyncio.get_running_loop()
+    answer: asyncio.Future = loop.create_future()
+
+    def worker():
+        try:
+            result = reader(prompt)
+        except (EOFError, OSError):
+            result = None       # Windows 上 stdin 導向 NUL 時 isatty() 仍為 True，讀取會直接 EOF
+        try:
+            loop.call_soon_threadsafe(lambda: answer.done() or answer.set_result(result))
+        except RuntimeError:
+            pass                # 事件迴圈已結束
+
+    threading.Thread(target=worker, daemon=True).start()
+    waiters = {answer}
+    stop_task = asyncio.ensure_future(stop.wait()) if stop is not None else None
+    if stop_task:
+        waiters.add(stop_task)
     try:
-        answer = await asyncio.to_thread(reader, prompt)
-    except EOFError:
-        # Windows 上 stdin 導向 NUL 時 isatty() 仍為 True，讀取會直接 EOF
+        await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        if stop_task:
+            stop_task.cancel()
+    if not answer.done() or answer.result() is None:
         print()
         return default
-    return answer.strip() or default
+    return answer.result().strip() or default
 
 
 async def confirm(prompt: str, default: bool = True) -> bool:
