@@ -34,6 +34,7 @@ class UC(BaseBrowser):
     def __init__(self):
         self.driver: Optional[Chrome] = None
         self.options: Optional[ChromeOptions] = None
+        self.user_data_dir: Optional[str] = None    # 固定設定檔（保留登入與擴充功能）；None 為暫存設定檔
         self._network_log: list = []  # 用於儲存 CDP 攔截到的網路請求
 
     def start(self, headless: bool = False):
@@ -55,7 +56,16 @@ class UC(BaseBrowser):
 
         # 啟動 uc 瀏覽器
         version = chrome_major_version(self.options.binary_location or None)
-        self.driver = Chrome(options=self.options, headless=headless, use_subprocess=True, version_main=version)
+        try:
+            self.driver = Chrome(options=self.options, headless=headless, use_subprocess=True, version_main=version,
+                                 user_data_dir=self.user_data_dir)
+        except Exception as e:
+            if self.user_data_dir:
+                raise RuntimeError(f"無法以設定檔啟動瀏覽器（{self.user_data_dir}），"
+                                   f"請確認沒有其他 Chrome 視窗正在使用這個設定檔：{e}") from e
+            raise
+        # execute_async_script 的頁面內等待（例如等待 React 表單可操作）可能長達數十秒
+        self.driver.set_script_timeout(60)
         
         self._network_log.clear()
 

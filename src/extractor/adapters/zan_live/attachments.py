@@ -8,7 +8,7 @@
 ├── images/gifts/       禮物圖示
 ├── raw comments/{直播名稱}/  留言 JSON
 └── web info/
-    ├── gifts/          各類禮物 JSON
+    ├── attachments/    各類禮物 JSON
     └── tickets/        liveTickets / ticketGroupArtists / live-banners JSON、縮圖 VTT
 """
 from pathlib import Path
@@ -30,7 +30,7 @@ class AttachmentBuilder:
         self.artists = root / "images" / "artists"
         self.gifts = root / "images" / "gifts"
         self.comments = root / "raw comments" / sanitize_filename(live_name)
-        self.gifts_json = root / "web info" / "gifts"
+        self.gifts_json = root / "web info" / "attachments"
         self.tickets_json = root / "web info" / "tickets"
         self.items: list[AttachmentSpec] = []
         self._seen: set[str] = set()

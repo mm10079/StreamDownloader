@@ -44,8 +44,16 @@ class Pipeline:
             return await self.execute(job)
         finally:
             await self.fetcher.aclose()
-            await self.sessions.aclose()
+            await self.sessions.aclose()        # 停止 cookies 同步；瀏覽器本身不受影響
+            await self._keep_browsers_open()
             await self.ctx.close()
+
+    async def _keep_browsers_open(self) -> None:
+        """有開啟的瀏覽器時，等使用者決定何時關閉（例如下載完成後繼續觀看直播到結束）"""
+        if not (self.ctx.browsers and self.options.keep_browser and log.interactive()) or self.stop.is_set():
+            return
+        await log.info(f"全部任務已結束，{len(self.ctx.browsers)} 個瀏覽器仍保持開啟，可以繼續觀看")
+        await log.ask("按 Enter 關閉瀏覽器並結束（或按 Ctrl+C）…", stop=self.stop)
 
     # ---------------- 解析 ----------------
     async def extract(self, url: str) -> Optional[MediaJob]:

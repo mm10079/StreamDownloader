@@ -163,7 +163,7 @@ class FolderFormat(BaseModel):
         ArtistsImages = os.path.join(ImagesRoot, 'artists')
         GiftsImages = os.path.join(ImagesRoot, 'gifts')
         Comments = os.path.join(Root, 'raw comments', title)
-        Gifts_Json = os.path.join(Root, 'web info', 'gifts')
+        Gifts_Json = os.path.join(Root, 'web info', 'attachments')
         Tickets_Json = os.path.join(Root, 'web info', 'tickets')
 
         return cls(

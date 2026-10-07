@@ -44,7 +44,7 @@ class BrowserWatchExtractor(InfoExtractor):
     async def extract(self, url: str, ctx: ExtractContext) -> MediaJob:
         if ctx.options.browser == "never":
             raise BrowserWatchError("沒有符合此網址的提取器，且 --browser never 不允許開啟瀏覽器")
-        browser = await ctx.new_browser(headless=False)
+        browser = await ctx.new_browser(headless=False, profile=True)
         await asyncio.to_thread(browser.goto, url or START_PAGE)
         await log.info("已開啟瀏覽器：請前往播放頁面並開始播放。偵測到串流時會在此詢問是否下載（Ctrl+C 結束）")
 
@@ -63,8 +63,8 @@ class BrowserWatchExtractor(InfoExtractor):
                 site = self._site_extractor(current)
                 if site is not None:
                     await log.info(f"偵測到 {site.config.name} 頁面，交由專用提取器處理：{current}")
-                    # 監控用瀏覽器離開頁面，避免與專用提取器的直播間 session 互相干擾
-                    await asyncio.to_thread(browser.goto, "about:blank")
+                    # 關閉監控用瀏覽器：避免殘留空白視窗、與專用提取器的直播間 session 互相干擾，並釋放固定設定檔
+                    await ctx.close_browser(browser)
                     return await site.extract(current, ctx)
 
             # 2. 新的串流請求 → 詢問
