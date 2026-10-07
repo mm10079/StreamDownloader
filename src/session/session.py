@@ -61,6 +61,12 @@ class Session:
         self.jar.clear()
         self.set_cookies(items)
 
+    def set_header(self, name: str, value: str) -> None:
+        """修改標頭；已建立的 client 同步更新"""
+        self.headers[name] = value
+        if self._client is not None:
+            self._client.headers[name] = value
+
     @property
     def user_agent(self) -> str:
         return self.headers.get("User-Agent", "")
@@ -103,9 +109,7 @@ class Session:
         self.browser = browser
         ua = await asyncio.to_thread(lambda: browser.user_agent)
         if ua:
-            self.headers["User-Agent"] = ua
-            if self._client is not None:
-                self._client.headers["User-Agent"] = ua
+            self.set_header("User-Agent", ua)
         if authority:
             self.authority = Authority.BROWSER
             await self.pull_from_browser()

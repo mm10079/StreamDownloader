@@ -26,6 +26,7 @@ class Pipeline:
         self.stop = stop or asyncio.Event()
         self.sessions = SessionManager()
         self.fetcher = create_fetcher(options.fetcher, self.sessions, options)
+        self.ctx = ExtractContext(options=options, sessions=self.sessions)
 
     async def run(self, url: str) -> bool:
         try:
@@ -36,6 +37,7 @@ class Pipeline:
         finally:
             await self.fetcher.aclose()
             await self.sessions.aclose()
+            await self.ctx.close()
 
     # ---------------- 解析 ----------------
     async def extract(self, url: str) -> Optional[MediaJob]:
@@ -46,12 +48,15 @@ class Pipeline:
             await log.error(f"沒有支援此網址的提取器：{url}")
             return None
         await log.info(f"使用提取器：{extractor.config.name or type(extractor).__name__}")
-        ctx = ExtractContext(options=self.options, sessions=self.sessions)
-        return await extractor.extract(url, ctx)
+        return await extractor.extract(url, self.ctx)
 
     # ---------------- 執行 ----------------
     async def execute(self, job: MediaJob) -> bool:
         output_dir = Path(job.output_dir or self.options.output)
+        if not self.options.media:
+            job.streams = []
+        if not self.options.attachment:
+            job.attachments = []
         if not job.streams and not job.attachments:
             await log.warning("提取結果沒有任何可下載的內容")
             return False

@@ -1,5 +1,6 @@
+import os
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
 DEFAULT_USER_AGENT = (
@@ -40,6 +41,22 @@ class Options(BaseModel):
     aria2_rpc: str = "http://localhost:6800/jsonrpc"
     aria2_secret: str = ""
 
+    # 網站帳號（建議用環境變數 STREAMDL_ACCOUNT / STREAMDL_PASSWORD，避免密碼出現在指令或 .cmd 檔）
+    account: str = Field(default_factory=lambda: os.environ.get("STREAMDL_ACCOUNT", ""), description="網站登入帳號")
+    password: str = Field(default_factory=lambda: os.environ.get("STREAMDL_PASSWORD", ""), description="網站登入密碼")
+
+    # 網站內容
+    media: bool = Field(default=True, description="下載影音串流")
+    attachment: bool = Field(default=True, description="下載附件（留言、禮物、票券資訊、圖片等）")
+    skip: str = Field(default="", description="略過的網址或 ID，以逗號分隔")
+    wait: bool = Field(default=True, description="直播尚未開始時等待開播")
+
     # 瀏覽器
+    browser: Literal["auto", "always", "never"] = Field(
+        default="auto", description="auto：網站需要時才開；always：以瀏覽器維持 session；never：完全不開")
     chrome_path: str = ""
     headless: bool = False
+
+    @property
+    def skip_set(self) -> set[str]:
+        return {s.strip() for s in self.skip.split(",") if s.strip()}

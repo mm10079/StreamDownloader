@@ -1,4 +1,3 @@
-from ...base_extractor import InfoExtractor
+from .extractor import ZanLiveExtractor
 
-class ZanLiveExtractor(InfoExtractor):
-    def extract(self, url: str) -> dict:
+__all__ = ["ZanLiveExtractor"]
