@@ -15,6 +15,7 @@
 | 瀏覽器監控 | 沒有網址或網站不支援時，開啟瀏覽器偵測頁面中的 m3u8 / mpd，逐一詢問是否下載 |
 | ZAN-LIVE | 自動登入、多視角、等待開播、附件（留言、禮物、票券、參演者、圖片） |
 | SINGULAR LIVE | 已購票券過濾、直播 / 存檔、日本 IP 限定提示、附件（活動資料、播放器參數、封面、章節截圖） |
+| Twitter（X）Space | 直接下載 Space 的 m3u8，輸出 m4a，資料夾以播出日期命名 |
 | 下載工具 | httpx（預設）、curl、瀏覽器內下載、aria2 |
 | 合併 | ffmpeg 合併為 mp4 / m4a（不重新編碼） |
 
@@ -73,7 +74,7 @@ StreamDownloader.exe "https://www.zan-live.com/zh-TW/live/detail/10782"
 
 提取器依下列順序比對網址：
 
-1. **網站專用**：ZAN-LIVE、SINGULAR LIVE
+1. **網站專用**：ZAN-LIVE、SINGULAR LIVE、Twitter Space
 2. **直接串流網址**：網址為 `.m3u8`、`.mpd` 或一般媒體檔（mp4 / mp3 等）
 3. **瀏覽器監控**：以上都不符合，或沒有輸入網址
 
@@ -123,6 +124,17 @@ StreamDownloader.exe "https://singular-live.thinkr.jp/zh/event/detail/活動ID"
       └── attachments/        event.json（活動資料 data-event）
   ```
 - 下載期間請保持瀏覽器開啟。
+
+### Twitter（X）Space
+
+```bash
+StreamDownloader.exe "https://prod-fastly-….video.pscp.tv/…/audio-space/master_playlist.m3u8" -t 標題
+```
+
+- 輸入 Space 的 m3u8 網址（pscp.tv）；目前不支援直接輸入 x.com 的 Space 頁面（可用瀏覽器監控取得 m3u8）。
+- 未指定 `-t` 時會詢問標題，直接 Enter 使用「Twitter Space」。
+- 輸出：`輸出資料夾/{播出日期} - Twitter Space #{標題}/{標題}.m4a`，播出日期取自播放清單的開始時間。
+- 自動帶上 `Referer: https://x.com/`；可用 `--referer` 覆寫。
 
 ### 固定瀏覽器設定檔（`--chrome-profile`）
 

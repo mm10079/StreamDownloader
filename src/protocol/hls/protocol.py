@@ -127,14 +127,15 @@ class HlsProtocol(StreamProtocol):
     # 片段排序鍵與網址修正
     # ======================================================================
     async def _setup_keying(self, pl: parser.MediaPlaylist) -> None:
-        # 1. 確認片段網址可用；不可用時嘗試舊版的路徑啟發式
+        # 1. 確認片段網址可用；不可用時嘗試舊版的路徑啟發式（媒體播放清單與主播放清單的各層路徑）
+        #    例：Twitter Space 的片段位於主播放清單路徑下，以媒體播放清單路徑解析會得到 HTTP 400
         first = pl.segments[0]
-        candidates = parser.legacy_base_candidates(pl.url, first.raw_uri)
+        candidates = self._segment_candidates(first.raw_uri)
         if len(candidates) > 1 and not await self._probe(candidates[0]):
             for idx, url in enumerate(candidates[1:], start=1):
                 if await self._probe(url):
-                    await log.warning(f"[{self.paths.title}] 片段網址改用替代路徑：{url}")
-                    self._rebase = lambda seg, i=idx: parser.legacy_base_candidates(self.media_url, seg.raw_uri)[i]
+                    await log.info(f"[{self.paths.title}] 片段網址改用替代路徑：{url}")
+                    self._rebase = lambda seg, i=idx: self._segment_candidates(seg.raw_uri)[i]
                     break
 
         # 2. 決定排序鍵：能推出網址模板就用網址數字（可與回溯片段共用），否則用媒體序號
@@ -154,6 +155,16 @@ class HlsProtocol(StreamProtocol):
         self.store.data.header_lines = pl.header_lines
         if self.template:
             await log.debug(f"[{self.paths.title}] 網址模板：{self.template.pattern}（間距 {self.template.space}）")
+
+    def _segment_candidates(self, raw_uri: str) -> list[str]:
+        """片段可能的完整網址：第一個為標準 urljoin（以媒體播放清單為基準），其後為替代路徑。
+        順序只取決於播放清單網址的層數，因此同一條串流中以索引選用是穩定的"""
+        candidates = parser.legacy_base_candidates(self.media_url, raw_uri)
+        if self.master_url:
+            for url in parser.legacy_base_candidates(self.master_url, raw_uri):
+                if url not in candidates:
+                    candidates.append(url)
+        return candidates
 
     def _key_of(self, seg: parser.HlsSegment, url: str) -> int:
         if self.store.data.key_mode == "template" and self.template:
