@@ -1,4 +1,17 @@
+"""ZAN-LIVE 提取器
+
+每個視角的流程（與舊版相同的安全順序）：
+  獨立 Session 登入 → 開啟專屬瀏覽器並帶入登入狀態 → 由瀏覽器進入該視角直播間
+  → 從瀏覽器頁面取得串流網址、從瀏覽器讀回 cookies → 才開始下載
+
+原因
+1. 不同視角共用 cookies / 登入狀態會互相干擾（同帳號同 session 只能維持一個播放）。
+2. 進入或重新整理直播間會改變伺服器端的播放狀態；若下載端用的 session 不是「最後進入直播間」
+   的那一份，下載會被踢掉。因此直播間頁面一律只由瀏覽器開啟，httpx 永遠不碰直播間，
+   下載期間 cookies 定期由瀏覽器同步（瀏覽器為權威）。
+"""
 import asyncio
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -13,8 +26,11 @@ from .auth import logged_in, login_browser, login_httpx
 from .schema.item import DetailMetas, LiveRoomMetas, TicketDetail
 from .urls import DOMAIN_RE, ZanUrls, parse_detail, parse_playroom
 
-LIVE_URL_POLL = 30          # 開演後等待串流網址出現的輪詢間隔（秒）
+ROOM_LOAD_TIMEOUT = 60      # 進入直播間後等待頁面載入（秒）
+LIVE_URL_POLL = 30          # 開放後等待串流網址出現的輪詢間隔（秒）
 LIVE_URL_TIMEOUT = 60 * 60  # 最多等待一小時
+SYNC_INTERVAL = 10          # 下載期間從瀏覽器同步 cookies 的間隔（秒）
+RELOAD_COOLDOWN = 60        # 同步後仍 403 時，兩次重新進入直播間的最短間隔（秒）
 
 
 class ZanError(Exception):
@@ -27,7 +43,9 @@ class ZanLiveExtractor(InfoExtractor):
         description="ZAN-LIVE 直播 / 存檔，含多視角與附件",
         valid_url_regex=DOMAIN_RE + r"/(?:[A-Za-z-]+/)?live/(?:detail|play)/",
         priority=10,
-        backfill=False,         # 舊版 SKIP_FORMAT_URLS 即排除 zan-live
+        backfill=False,                     # 舊版 SKIP_FORMAT_URLS 即排除 zan-live
+        need_driver=True,
+        need_single_driver_session=True,
         need_auth=True,
     )
 
@@ -37,9 +55,16 @@ class ZanLiveExtractor(InfoExtractor):
     # ======================================================================
     async def extract(self, url: str, ctx: ExtractContext) -> MediaJob:
         opts = ctx.options
-        main = await self._login_session(ctx, first=True)
+        if opts.browser == "never":
+            raise ZanError("ZAN-LIVE 必須由瀏覽器進入直播間以維持下載 session，無法使用 --browser never")
+        await self._ask_credentials(ctx)
 
-        # 1. 取得票券群組與選票
+        # 查詢用 session：讀取票券 API 與 detail 頁（不進入直播間）；之後作為第一個視角的 session
+        probe = ctx.new_session(self._base_headers())
+        if await login_httpx(probe, self.urls, opts.account, opts.password):
+            await log.info("ZAN-LIVE：帳號登入成功")
+
+        opened: dict[tuple[str, str], tuple[Session, str]] = {}
         group_id = parse_detail(url)
         ticket_id = live_id = None
         if group_id is None:
@@ -47,13 +72,16 @@ class ZanLiveExtractor(InfoExtractor):
             if ids is None:
                 raise ZanError(f"無法辨識的 ZAN-LIVE 網址：{url}")
             ticket_id, live_id = ids
-            room_html = await self._get(main, self.urls.playroom(ticket_id, live_id))
-            group_id = pages.get_meta(pages.soup_of(room_html), "ticket-group-id")
+            # 直播間網址：直接以該視角的瀏覽器進入，從頁面取得票券群組
+            session, html = await self._open_angle(ctx, probe, self.urls.playroom(*ids), "", wait=False,
+                                                   need_live=False)
+            opened[ids] = (session, html)
+            group_id = pages.get_meta(pages.soup_of(html), "ticket-group-id")
             if not group_id:
-                raise ZanError("直播間頁面沒有 ticket-group-id（可能沒有購票或未登入）")
+                raise ZanError("直播間頁面沒有 ticket-group-id（可能沒有購票）")
 
-        tickets_raw: list[dict] = (await main.client().get(self.urls.tickets_api(group_id))).json().get("result", [])
-        detail_soup = pages.soup_of(await self._get(main, self.urls.detail(group_id)))
+        tickets_raw: list[dict] = (await probe.client().get(self.urls.tickets_api(group_id))).json().get("result", [])
+        detail_soup = pages.soup_of((await probe.client().get(self.urls.detail(group_id))).text)
         detail = pages.import_metas(DetailMetas, detail_soup)
         title = pages.raw_metas(detail_soup).get("og:title") or detail.Title or opts.title
 
@@ -67,19 +95,28 @@ class ZanLiveExtractor(InfoExtractor):
             return MediaJob(title=title)
         for t in selected:
             await log.info(f"  - {t.name} / {pages.open_time(t):%Y-%m-%d %H:%M}（{'直播中' if t.isLive else '未開始'}）")
+        if len(selected) > 1 and not (opts.account and opts.password):
+            await log.warning(f"ZAN-LIVE：未提供帳密，需要在 {len(selected)} 個瀏覽器視窗中分別手動登入")
 
         if not await self._wait_open(selected, opts.wait):
             return MediaJob(title=title)
 
-        # 2. 每張票一條串流；多視角時各自登入取得獨立 session
+        # 每個視角：獨立登入 + 專屬瀏覽器進入直播間（依序進行，避免同時登入互相干擾）
         job = MediaJob(title=title, output_dir=opts.output / sanitize_filename(title))
         artists = pages.extract_artists(detail_soup)
         top_images = pages.top_title_images(detail_soup)
         seen_urls: set[str] = set()
         for i, ticket in enumerate(selected):
-            session = main if i == 0 else await self._login_session(ctx, first=False, base=main)
-            stream, attachments = await self._build_ticket(
-                ctx, session, ticket, tickets_raw, detail, artists, top_images)
+            key = (str(ticket.id), str(ticket.liveId))
+            label = f"視角 {i + 1}/{len(selected)}「{ticket.name}」"
+            if key in opened:
+                session, html = opened[key]
+                html = await self._room_html(session, self.urls.playroom(*key), label, opts.wait, html)
+            else:
+                base = probe if (i == 0 and not opened) else None
+                session, html = await self._open_angle(ctx, base, self.urls.playroom(*key), label, opts.wait)
+            stream, attachments = await self._build_ticket(ctx, session, ticket, html, tickets_raw,
+                                                           detail, artists, top_images)
             job.streams.append(stream)
             for a in attachments:       # 多視角共用的圖片只下載一次
                 if a.url is None or a.url not in seen_urls:
@@ -88,62 +125,103 @@ class ZanLiveExtractor(InfoExtractor):
         return job
 
     # ======================================================================
-    # 登入 / Session
+    # 帳密
     # ======================================================================
-    async def _login_session(self, ctx: ExtractContext, first: bool, base: Optional[Session] = None) -> Session:
+    async def _ask_credentials(self, ctx: ExtractContext) -> None:
+        """未設定帳密且在互動終端機時詢問一次（密碼不回顯）；帳號直接 Enter 則改為瀏覽器手動登入"""
         opts = ctx.options
-        session = ctx.new_session({"Origin": self.urls.domain, "Referer": self.urls.domain + "/"})
+        if (opts.account and opts.password) or not log.interactive():
+            return
+        if not opts.account:
+            opts.account = await log.ask("ZAN-LIVE 帳號（直接 Enter 改為在瀏覽器手動登入）：")
+        if opts.account and not opts.password:
+            opts.password = await log.ask("ZAN-LIVE 密碼（輸入時不會顯示）：", secret=True)
 
-        if opts.browser != "always" and await login_httpx(session, self.urls, opts.account, opts.password):
-            await log.info(f"ZAN-LIVE：登入成功（session {session.id}）")
-            return session
+    def _base_headers(self) -> dict[str, str]:
+        return {"Origin": self.urls.domain, "Referer": self.urls.domain + "/"}
 
-        if not first and base is not None and not (opts.account and opts.password):
-            # 手動登入無法重複登入：共用登入狀態（同帳號同時觀看可能互踢）
-            await log.warning("ZAN-LIVE：未提供帳密，多視角共用同一登入狀態，可能被網站限制同時觀看")
-            return ctx.sessions.fork(base.id)
+    # ======================================================================
+    # 視角：登入 → 瀏覽器進入直播間 → 同步
+    # ======================================================================
+    async def _open_angle(
+        self, ctx: ExtractContext, session: Optional[Session], playroom: str, label: str, wait: bool,
+        need_live: bool = True,
+    ) -> tuple[Session, str]:
+        opts = ctx.options
+        has_creds = bool(opts.account and opts.password)
+        session = session or ctx.new_session(self._base_headers())
 
-        if opts.browser == "never":
-            raise ZanError("登入失敗；請提供帳號密碼（STREAMDL_ACCOUNT / STREAMDL_PASSWORD），或允許使用瀏覽器")
+        browser = await ctx.new_browser(headless=opts.headless and has_creds)   # 手動登入一定要有視窗
+        await session.attach_browser(browser, authority=False)                 # UA 以瀏覽器為準
 
-        headless = opts.headless and bool(opts.account and opts.password)   # 手動登入一定要有視窗
-        browser = await ctx.new_browser(headless=headless)
-        if not await login_browser(session, browser, self.urls, opts.account, opts.password):
-            raise ZanError("瀏覽器登入逾時")
-        await log.info(f"ZAN-LIVE：瀏覽器登入成功（session {session.id}）")
-        return session
+        if not logged_in(session) and has_creds:
+            await login_httpx(session, self.urls, opts.account, opts.password)
+        if logged_in(session):
+            # httpx 登入 → 帶入瀏覽器（舊版 httpx_cookies_to_driver）
+            await asyncio.to_thread(browser.goto, self.urls.domain)
+            await session.push_to_browser()
+        elif not await login_browser(browser, self.urls, opts.account, opts.password, label):
+            raise ZanError(f"{label}登入逾時")
 
-    async def _get(self, session: Session, url: str) -> str:
-        resp = await session.client().get(url)
-        if "/auth/login" in str(resp.url):
-            raise ZanError(f"被導向登入頁，登入狀態無效：{url}")
-        resp.raise_for_status()
-        return resp.text
+        # 由瀏覽器進入直播間；之後瀏覽器是 cookies 的唯一權威
+        await asyncio.to_thread(browser.goto, playroom)
+        session.authority = Authority.BROWSER
+        html = await self._room_html(session, playroom, label, wait, need_live=need_live)
+        await session.pull_from_browser(replace=True)
+        session.start_browser_sync(SYNC_INTERVAL)
+        session.set_refresher(self._make_refresher(playroom, label))
+        await log.info(f"ZAN-LIVE：{label}已進入直播間（session {session.id}）")
+        return session, html
 
-    async def _refresh(self, session: Session, playroom: str, ctx: ExtractContext) -> None:
-        """下載中遇到 401/403：重新載入直播間更新 cookies；登入失效時重新登入"""
-        if session.authority is Authority.BROWSER and session.browser is not None:
+    async def _room_html(self, session: Session, playroom: str, label: str, wait: bool,
+                         html: Optional[str] = None, need_live: bool = True) -> str:
+        """從瀏覽器讀取直播間頁面，等待 live-url 出現（不以 httpx 讀取，避免改變播放狀態）"""
+        browser = session.browser
+        start = time.monotonic()
+        announced = False
+        while True:
+            if html is None:
+                html = await asyncio.to_thread(lambda: browser.content)
+            current = await asyncio.to_thread(lambda: browser.current_url)
+            if "/auth/login" in current:
+                raise ZanError(f"{label}被導向登入頁，登入狀態無效")
+            raw = pages.raw_metas(pages.soup_of(html))
+            if raw.get("live-url") or (not need_live and raw.get("ticket-group-id")):
+                return html
+            elapsed = time.monotonic() - start
+            if elapsed < ROOM_LOAD_TIMEOUT:
+                await asyncio.sleep(2)                  # 頁面仍在載入
+            elif wait and elapsed < LIVE_URL_TIMEOUT:
+                if not announced:
+                    await log.info(f"ZAN-LIVE：{label}直播間已開放但串流尚未開始，等待中…")
+                    announced = True
+                await asyncio.sleep(LIVE_URL_POLL)
+                await asyncio.to_thread(browser.goto, playroom)
+            else:
+                raise ZanError(f"{label}直播間沒有串流網址：{playroom}")
+            html = None
+
+    def _make_refresher(self, playroom: str, label: str):
+        """下載遇到 401/403：先從瀏覽器同步 cookies；短時間內再次失敗才讓瀏覽器重新進入直播間"""
+        last_reload = 0.0
+        last_pull = 0.0
+
+        async def refresh(session: Session) -> None:
+            nonlocal last_reload, last_pull
+            now = time.monotonic()
+            if session.browser is None:
+                return
+            if now - last_pull > RELOAD_COOLDOWN or now - last_reload < RELOAD_COOLDOWN:
+                last_pull = now
+                await session.pull_from_browser()
+                return
+            last_reload = now
+            await log.warning(f"ZAN-LIVE：{label}同步 cookies 後仍被拒，重新進入直播間")
             await asyncio.to_thread(session.browser.goto, playroom)
             await asyncio.sleep(5)
             await session.pull_from_browser()
-            return
-        resp = await session.client().get(playroom)
-        if "/auth/login" in str(resp.url) or not logged_in(session):
-            await log.warning(f"ZAN-LIVE：session {session.id} 登入失效，重新登入")
-            if await login_httpx(session, self.urls, ctx.options.account, ctx.options.password):
-                await session.client().get(playroom)
 
-    async def _bind_browser(self, ctx: ExtractContext, session: Session, playroom: str) -> None:
-        """browser=always：以瀏覽器開啟直播間維持 session（舊版行為），之後 cookies 以瀏覽器為準"""
-        if session.browser is None:
-            browser = await ctx.new_browser()
-            await session.attach_browser(browser, authority=False)
-            await asyncio.to_thread(browser.goto, self.urls.domain)
-            await session.push_to_browser()
-        await asyncio.to_thread(session.browser.goto, playroom)
-        session.authority = Authority.BROWSER
-        await asyncio.sleep(3)
-        await session.pull_from_browser()
+        return refresh
 
     # ======================================================================
     # 等待開播
@@ -162,39 +240,17 @@ class ZanLiveExtractor(InfoExtractor):
                 await log.info(f"ZAN-LIVE：距離開放還有 {int(remain - 600) // 60} 分鐘")
         return True
 
-    async def _live_room(self, session: Session, playroom: str, wait: bool) -> tuple[str, LiveRoomMetas]:
-        """讀取直播間；開放後串流網址可能晚一點才出現，輪詢等待"""
-        waited = 0
-        while True:
-            html = await self._get(session, playroom)
-            soup = pages.soup_of(html)
-            raw = pages.raw_metas(soup)
-            if raw.get("live-url") or not wait or waited >= LIVE_URL_TIMEOUT:
-                metas = pages.import_metas(LiveRoomMetas, soup) if raw.get("live-name") and raw.get("live-url") else None
-                if metas is None:
-                    raise ZanError(f"直播間沒有串流網址：{playroom}")
-                return html, metas
-            if waited == 0:
-                await log.info("ZAN-LIVE：直播間已開放但串流尚未開始，等待中…")
-            await asyncio.sleep(LIVE_URL_POLL)
-            waited += LIVE_URL_POLL
-
     # ======================================================================
     # 單張票
     # ======================================================================
     async def _build_ticket(
-        self, ctx: ExtractContext, session: Session, ticket: TicketDetail, tickets_raw: list[dict],
-        detail: DetailMetas, artists, top_images,
+        self, ctx: ExtractContext, session: Session, ticket: TicketDetail, html: str,
+        tickets_raw: list[dict], detail: DetailMetas, artists, top_images,
     ) -> tuple[StreamSpec, list[AttachmentSpec]]:
         opts = ctx.options
         playroom = self.urls.playroom(ticket.id, ticket.liveId)
         session.set_header("Referer", playroom)
-        session.set_refresher(lambda s, p=playroom: self._refresh(s, p, ctx))
-
-        if opts.media and opts.browser == "always":
-            await self._bind_browser(ctx, session, playroom)
-
-        _, metas = await self._live_room(session, playroom, opts.wait)
+        metas = pages.import_metas(LiveRoomMetas, pages.soup_of(html))
         live_name = sanitize_filename(metas.Livename)     # 內含 HTML 實體解碼
 
         stream = StreamSpec(

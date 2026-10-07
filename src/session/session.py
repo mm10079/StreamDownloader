@@ -50,6 +50,7 @@ class Session:
         self._refresher: Optional[Refresher] = None
         self._refresh_lock = asyncio.Lock()
         self._client: Optional[httpx.AsyncClient] = None
+        self._sync_task: Optional[asyncio.Task] = None
 
     # ---------------- cookies / headers ----------------
 
@@ -98,6 +99,7 @@ class Session:
         return self._client
 
     async def aclose(self) -> None:
+        self.stop_browser_sync()
         if self._client is not None:
             await self._client.aclose()
             self._client = None
@@ -114,11 +116,37 @@ class Session:
             self.authority = Authority.BROWSER
             await self.pull_from_browser()
 
-    async def pull_from_browser(self) -> None:
+    async def pull_from_browser(self, replace: bool = False) -> None:
+        """從瀏覽器讀回 cookies。預設為合併：同名同網域以瀏覽器為準，
+        但保留只有下載端拿到的 cookie（例如 CDN 對片段請求回傳的 Set-Cookie）"""
         if self.browser is None:
             return
         raw = await asyncio.to_thread(lambda: self.browser.cookies)
-        self.replace_cookies(cookie_tools.from_browser(raw))
+        items = cookie_tools.from_browser(raw)
+        if replace:
+            self.replace_cookies(items)
+        else:
+            self.set_cookies(items)
+
+    def start_browser_sync(self, interval: float = 10) -> None:
+        """瀏覽器持續播放時，播放器會自行更新 cookies（如 CloudFront 簽章）；定期同步給下載端"""
+        if self._sync_task is None or self._sync_task.done():
+            self._sync_task = asyncio.create_task(self._sync_loop(interval))
+
+    def stop_browser_sync(self) -> None:
+        if self._sync_task is not None:
+            self._sync_task.cancel()
+            self._sync_task = None
+
+    async def _sync_loop(self, interval: float) -> None:
+        while True:
+            await asyncio.sleep(interval)
+            if self.authority is not Authority.BROWSER:
+                continue
+            try:
+                await self.pull_from_browser()
+            except Exception:
+                pass    # 瀏覽器暫時無回應時略過，下次再試
 
     async def push_to_browser(self) -> None:
         """只在 jar 為權威時允許（例如 API 登入後讓瀏覽器沿用登入狀態）"""

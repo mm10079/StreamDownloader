@@ -68,11 +68,8 @@ def _browser_login_sync(browser, urls: ZanUrls, account: str, password: str) -> 
     return False
 
 
-async def login_browser(session: Session, browser, urls: ZanUrls, account: str, password: str) -> bool:
-    """以瀏覽器登入，成功後瀏覽器成為該 session 的 cookie 權威"""
+async def login_browser(browser, urls: ZanUrls, account: str, password: str, label: str = "") -> bool:
+    """在瀏覽器內登入（有帳密時自動填寫，否則等待手動登入）"""
     if not (account and password):
-        await log.info(f"ZAN-LIVE：請在瀏覽器中手動登入（{MANUAL_LOGIN_TIMEOUT // 60} 分鐘內）")
-    ok = await asyncio.to_thread(_browser_login_sync, browser, urls, account, password)
-    if ok:
-        await session.attach_browser(browser, authority=True)
-    return ok
+        await log.info(f"ZAN-LIVE：請在{label}瀏覽器視窗中手動登入（{MANUAL_LOGIN_TIMEOUT // 60} 分鐘內）")
+    return await asyncio.to_thread(_browser_login_sync, browser, urls, account, password)

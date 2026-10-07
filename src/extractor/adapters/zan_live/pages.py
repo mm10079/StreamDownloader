@@ -40,9 +40,14 @@ def import_metas(model: Type[T], soup: BeautifulSoup) -> T:
         key = (info.json_schema_extra or {}).get("key") if isinstance(info.json_schema_extra, dict) else None
         if not isinstance(key, str) or key not in metas:
             continue
-        value: Any = metas[key]
-        if isinstance(value, str) and value[:1] in "[{" and value[-1:] in "]}":
-            value = json.loads(value)
+        value: Any = metas[key].strip()
+        if not value:
+            continue        # 空內容視為沒有此欄位，使用預設值
+        if value[0] in "[{" and value[-1] in "]}":
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                pass        # 只是剛好以括號開頭的文字（例如標題），保留原字串
         data[field_name] = value
     return model(**data)
 

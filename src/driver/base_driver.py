@@ -1,4 +1,12 @@
+import re
 from abc import ABC, abstractmethod
+
+_MEDIA_RE = re.compile(r"\.(m3u8|mpd)(?:$|[?#/])", re.IGNORECASE)
+
+
+def is_media_url(url: str) -> bool:
+    """是否為串流清單網址（m3u8 / mpd）"""
+    return bool(url.startswith("http") and _MEDIA_RE.search(url))
 
 class BaseBrowser(ABC):
 
@@ -56,6 +64,11 @@ class BaseBrowser(ABC):
         pass
 
     # ==================== 串流網路攔截 ====================
+    @abstractmethod
+    def drain_media_requests(self) -> list[dict]:
+        """讀出自上次呼叫後新發出的串流請求：[{url, headers, document_url, ...}]"""
+        pass
+
     @abstractmethod
     def get_network_requests(self) -> list:
         """取得網路請求紀錄 (專門用來抓取該視角的 m3u8 / mpd 串流網址)"""

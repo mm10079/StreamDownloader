@@ -52,7 +52,7 @@ async def amain(argv: Optional[list[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     options = Options(**vars(args))
     if not options.url:
-        options.url = input("請輸入網址：").strip()
+        options.url = await log.ask("請輸入網址（直接 Enter 開啟瀏覽器，手動前往播放頁面）：")
     stop = asyncio.Event()
     install_stop_handler(asyncio.get_running_loop(), stop)
     try:

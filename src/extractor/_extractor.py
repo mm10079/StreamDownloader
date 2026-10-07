@@ -34,6 +34,7 @@ class ExtractContext:
     options: Options
     sessions: SessionManager
     browsers: list["BaseBrowser"] = field(default_factory=list)
+    stop: asyncio.Event = field(default_factory=asyncio.Event)   # 使用者按 Ctrl+C（軟停止）
 
     def new_session(self, headers: Optional[dict] = None) -> Session:
         base = {"User-Agent": self.options.user_agent}
