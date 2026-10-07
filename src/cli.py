@@ -3,7 +3,7 @@ import asyncio
 import signal
 import sys
 from pathlib import Path
-from typing import get_args, get_origin, Optional, Union
+from typing import Literal, get_args, get_origin, Optional, Union
 
 from .core.options import Options
 from .core.pipeline import Pipeline
@@ -24,9 +24,14 @@ def build_parser() -> argparse.ArgumentParser:
         tp = field.annotation
         if get_origin(tp) is Union:     # Optional[X]
             tp = next(a for a in get_args(tp) if a is not type(None))
-        kwargs = {"help": field.description or "", "default": field.default}
+        default = field.get_default(call_default_factory=True)
+        if name == "password":
+            default = argparse.SUPPRESS     # 不在 --help 顯示環境變數中的密碼
+        kwargs = {"help": field.description or "", "default": default}
         if tp is bool:
             kwargs["action"] = argparse.BooleanOptionalAction
+        elif get_origin(tp) is Literal:
+            kwargs["choices"] = list(get_args(tp))
         else:
             kwargs["type"] = tp if tp in (int, float, str, Path) else str
         parser.add_argument(*flags, **kwargs)
@@ -47,7 +52,7 @@ async def amain(argv: Optional[list[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     options = Options(**vars(args))
     if not options.url:
-        options.url = input("請輸入網址：").strip()
+        options.url = await log.ask("請輸入網址（直接 Enter 開啟瀏覽器，手動前往播放頁面）：")
     stop = asyncio.Event()
     install_stop_handler(asyncio.get_running_loop(), stop)
     try:

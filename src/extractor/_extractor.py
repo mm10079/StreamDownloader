@@ -1,6 +1,7 @@
+import asyncio
 import re
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar, List, Optional
 
 from pydantic import BaseModel
@@ -32,23 +33,33 @@ class ExtractorConfig(BaseModel):
 class ExtractContext:
     options: Options
     sessions: SessionManager
+    browsers: list["BaseBrowser"] = field(default_factory=list)
+    stop: asyncio.Event = field(default_factory=asyncio.Event)   # 使用者按 Ctrl+C（軟停止）
 
     def new_session(self, headers: Optional[dict] = None) -> Session:
         base = {"User-Agent": self.options.user_agent}
         base.update(headers or {})
         return self.sessions.create(headers=base, proxy=self.options.proxy)
 
-    async def new_browser(self) -> "BaseBrowser":
-        """需要瀏覽器的提取器呼叫；關閉由提取器自行負責"""
-        import asyncio
+    async def new_browser(self, headless: Optional[bool] = None) -> "BaseBrowser":
+        """開啟瀏覽器；在整個下載流程結束時由 Pipeline 統一關閉（下載期間可能仍需要它維持 session）"""
         from ..driver import BrowserType, get_browser_class
         browser = get_browser_class(BrowserType.UC)()
         if self.options.chrome_path:
             from undetected_chromedriver import ChromeOptions
             browser.options = ChromeOptions()
             browser.options.binary_location = self.options.chrome_path
-        await asyncio.to_thread(browser.start, self.options.headless)
+        await asyncio.to_thread(browser.start, self.options.headless if headless is None else headless)
+        self.browsers.append(browser)
         return browser
+
+    async def close(self) -> None:
+        for browser in self.browsers:
+            try:
+                await asyncio.to_thread(browser.close)
+            except Exception:
+                pass
+        self.browsers.clear()
 
 
 class InfoExtractor(ABC):

@@ -11,6 +11,7 @@ setup(
         "rich>=13",
         "pycryptodome>=3.19",
         "undetected-chromedriver>=3.5",
+        "beautifulsoup4>=4.12",
     ],
     entry_points={"console_scripts": ["streamdl=src.cli:main"]},
 )

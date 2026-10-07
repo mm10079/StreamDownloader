@@ -1,9 +1,34 @@
 # uc.py
 import json
+import os
+import re
+import subprocess
 from typing import Optional
-from undetected_chromedriver import Chrome, ChromeOptions
+from undetected_chromedriver import Chrome, ChromeOptions, find_chrome_executable
 
-from ..base_driver import BaseBrowser
+from ..base_driver import BaseBrowser, is_media_url
+
+# uc 的 __del__ 會在已 quit 後再 quit 一次，Windows 上噴出 WinError 6；關閉一律由 close() 明確處理
+Chrome.__del__ = lambda self: None
+
+
+def chrome_major_version(binary: Optional[str]) -> Optional[int]:
+    """讀取 Chrome 執行檔的主版本號；uc 預設下載最新 ChromeDriver，與已安裝版本不同時會無法啟動"""
+    binary = binary or find_chrome_executable()
+    if not binary or not os.path.isfile(binary):
+        return None
+    try:
+        if os.name == "nt":
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", f"(Get-Item -LiteralPath '{binary}').VersionInfo.ProductVersion"],
+                capture_output=True, text=True, timeout=15).stdout
+        else:
+            out = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=15).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"(\d+)\.\d+\.\d+", out)
+    return int(m.group(1)) if m else None
+
 
 class UC(BaseBrowser):
     def __init__(self):
@@ -25,36 +50,14 @@ class UC(BaseBrowser):
         self.options.add_argument("--disable-backgrounding-occluded-windows")
         self.options.add_argument("--disable-renderer-backgrounding")
 
-        # 啟動 uc 瀏覽器
-        self.driver = Chrome(options=self.options, headless=headless, use_subprocess=True)
-        
-        # 💡 【核心補足】開啟 Chrome DevTools Protocol (CDP) 監聽網路請求
-        self._network_log.clear()
-        self.driver.execute_cdp_cmd("Network.enable", {})
-        
-        # 當有新的網路請求發出或收到回應時，觸發此回呼函式
-        def cb(message):
-            try:
-                # 解析 CDP 傳回的 JSON 數據
-                current_log = json.loads(message)
-                # 我們通常只需要 RequestWillBeSent (即將發送的請求)
-                if current_log.get("method") == "Network.requestWillBeSent":
-                    request_data = current_log["params"]["request"]
-                    url = request_data.get("url", "")
-                    
-                    # 篩選你想要的直播關鍵字，避免 memory leak 存太多無用請求
-                    if "m3u8" in url or "mpd" in url or "playlist" in url:
-                        self._network_log.append({
-                            "url": url,
-                            "method": request_data.get("method"),
-                            "headers": request_data.get("headers"),
-                            "type": current_log["params"].get("type")
-                        })
-            except Exception:
-                pass
+        # 開啟 performance log 以讀取網路請求（uc 的 add_cdp_listener 需 enable_cdp_events 才會運作，改用此方式）
+        self.options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
 
-        # 將監聽器綁定到 Chrome 的日誌回呼
-        self.driver.add_cdp_listener("Network.requestWillBeSent", cb)
+        # 啟動 uc 瀏覽器
+        version = chrome_major_version(self.options.binary_location or None)
+        self.driver = Chrome(options=self.options, headless=headless, use_subprocess=True, version_main=version)
+        
+        self._network_log.clear()
 
     def close(self):
         """關閉瀏覽器獨立實例，釋放記憶體"""
@@ -120,6 +123,27 @@ class UC(BaseBrowser):
         if self.driver is None:
             raise RuntimeError("瀏覽器尚未啟動，請先呼叫 start() 方法")
         return self.driver.execute_async_script(script, *args)
+
+    def drain_media_requests(self) -> list[dict]:
+        """讀出自上次呼叫後新發出的串流請求（m3u8 / mpd），含請求標頭"""
+        if self.driver is None:
+            raise RuntimeError("瀏覽器尚未啟動，請先呼叫 start() 方法")
+        found = []
+        for entry in self.driver.get_log("performance"):
+            try:
+                msg = json.loads(entry["message"]).get("message", {})
+            except (KeyError, ValueError):
+                continue
+            if msg.get("method") != "Network.requestWillBeSent":
+                continue
+            req = msg.get("params", {}).get("request", {})
+            url = req.get("url", "")
+            if is_media_url(url):
+                item = {"url": url, "method": req.get("method"), "headers": req.get("headers") or {},
+                        "type": msg["params"].get("type"), "document_url": msg["params"].get("documentURL", "")}
+                found.append(item)
+                self._network_log.append(item)
+        return found
 
     def get_network_requests(self) -> list:
         """取得網路請求紀錄 (專門用來抓取該視角的 m3u8 / mpd 串流網址)"""

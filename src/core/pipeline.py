@@ -6,6 +6,7 @@ TaskGroup 結束即代表全部完成，不需要毒藥丸 / soft_stop。
 """
 import asyncio
 import json
+import traceback
 from pathlib import Path
 from typing import Optional
 
@@ -20,12 +21,20 @@ from .models import AttachmentKind, AttachmentSpec, MediaJob, StreamSpec
 from .options import Options
 
 
+def _where(e: BaseException) -> str:
+    """錯誤發生在本專案內的最後位置（略過第三方套件），方便回報問題"""
+    frames = [f for f in traceback.extract_tb(e.__traceback__) if f"{Path(__file__).parents[1]}" in f.filename]
+    f = frames[-1] if frames else traceback.extract_tb(e.__traceback__)[-1]
+    return f"{Path(f.filename).name}:{f.lineno}"
+
+
 class Pipeline:
     def __init__(self, options: Options, stop: Optional[asyncio.Event] = None):
         self.options = options
         self.stop = stop or asyncio.Event()
         self.sessions = SessionManager()
         self.fetcher = create_fetcher(options.fetcher, self.sessions, options)
+        self.ctx = ExtractContext(options=options, sessions=self.sessions, stop=self.stop)
 
     async def run(self, url: str) -> bool:
         try:
@@ -36,6 +45,7 @@ class Pipeline:
         finally:
             await self.fetcher.aclose()
             await self.sessions.aclose()
+            await self.ctx.close()
 
     # ---------------- 解析 ----------------
     async def extract(self, url: str) -> Optional[MediaJob]:
@@ -46,12 +56,21 @@ class Pipeline:
             await log.error(f"沒有支援此網址的提取器：{url}")
             return None
         await log.info(f"使用提取器：{extractor.config.name or type(extractor).__name__}")
-        ctx = ExtractContext(options=self.options, sessions=self.sessions)
-        return await extractor.extract(url, ctx)
+        try:
+            return await extractor.extract(url, self.ctx)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            await log.error(f"解析失敗：{type(e).__name__}: {str(e).splitlines()[0] if str(e) else ''}（{_where(e)}）")
+            return None
 
     # ---------------- 執行 ----------------
     async def execute(self, job: MediaJob) -> bool:
         output_dir = Path(job.output_dir or self.options.output)
+        if not self.options.media:
+            job.streams = []
+        if not self.options.attachment:
+            job.attachments = []
         if not job.streams and not job.attachments:
             await log.warning("提取結果沒有任何可下載的內容")
             return False
