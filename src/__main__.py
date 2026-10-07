@@ -11,7 +11,7 @@ if __package__ is None and not getattr(sys, 'frozen', False):
     path = os.path.realpath(os.path.abspath(__file__))
     sys.path.insert(0, os.path.dirname(os.path.dirname(path)))
 
-import stream_downloader
+import src
 
 if __name__ == '__main__':
-    stream_downloader.main()
+    src.main()
