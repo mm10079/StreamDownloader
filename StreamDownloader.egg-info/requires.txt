@@ -1,0 +1,6 @@
+pydantic>=2.0
+httpx>=0.28
+rich>=13
+pycryptodome>=3.19
+undetected-chromedriver>=3.5
+beautifulsoup4>=4.12

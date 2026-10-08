@@ -1,8 +1,8 @@
 import asyncio
 
-from src.core.store import Segment, SegmentStore, SegStatus
-from src.session import Session
-from src.session import cookies as ct
+from streamdl.core.store import Segment, SegmentStore, SegStatus
+from streamdl.session import Session
+from streamdl.session import cookies as ct
 
 
 def test_cookie_header_respects_domain_and_path():

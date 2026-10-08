@@ -8,14 +8,14 @@ from typing import Literal, get_args, get_origin, Optional, Union
 from .core.options import Options
 from .core.pipeline import Pipeline
 from .utils import log
-from .utils.console import RichPusher
+from .utils.console import Message, RichPusher
 
 SHORT = {"output": "-o", "title": "-t", "quality": "-q", "fetcher": "-f"}
 
 
 def build_parser() -> argparse.ArgumentParser:
     """依 Options 欄位自動產生參數（沿用舊專案的作法）"""
-    parser = argparse.ArgumentParser(prog="StreamDownloader", description="串流下載器")
+    parser = argparse.ArgumentParser(prog="streamdl", description="串流下載器")
     for name, field in Options.model_fields.items():
         if name == "url":
             parser.add_argument("url", nargs="?", default="", help="串流或網站網址")
@@ -49,6 +49,7 @@ def install_stop_handler(loop: asyncio.AbstractEventLoop, stop: asyncio.Event) -
 
 
 async def amain(argv: Optional[list[str]] = None) -> int:
+    Message.register_pusher(RichPusher())       # 命令列使用 Rich 進度畫面；當作套件使用時不註冊
     args = build_parser().parse_args(argv)
     options = Options(**vars(args))
     if not options.url:
@@ -56,12 +57,12 @@ async def amain(argv: Optional[list[str]] = None) -> int:
     stop = asyncio.Event()
     install_stop_handler(asyncio.get_running_loop(), stop)
     try:
-        ok = await Pipeline(options, stop).run(options.url)
+        result = await Pipeline(options, stop).run(options.url)
     finally:
         await RichPusher.shutdown()
-    if not ok:
+    if not result.ok:
         await log.warning("部分項目未完成")
-    return 0 if ok else 1
+    return 0 if result.ok else 1
 
 
 def _launched_by_double_click(argv: Optional[list[str]]) -> bool:

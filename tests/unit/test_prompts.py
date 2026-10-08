@@ -3,9 +3,9 @@ import builtins
 import threading
 import time
 
-from src.core.options import Options
-from src.core.pipeline import Pipeline
-from src.utils import log
+from streamdl.core.options import Options
+from streamdl.core.pipeline import Pipeline
+from streamdl.utils import log
 
 
 def test_ask_returns_default_when_stopped(monkeypatch):

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # Execute with
-# $ python3 -m app
+# $ python -m streamdl
 
 import sys
 
@@ -11,7 +11,7 @@ if __package__ is None and not getattr(sys, 'frozen', False):
     path = os.path.realpath(os.path.abspath(__file__))
     sys.path.insert(0, os.path.dirname(os.path.dirname(path)))
 
-import src
+import streamdl
 
 if __name__ == '__main__':
-    src.main()
+    streamdl.main()

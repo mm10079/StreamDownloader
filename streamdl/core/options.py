@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 from typing import Literal, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -11,6 +11,7 @@ DEFAULT_USER_AGENT = (
 
 class Options(BaseModel):
     """使用者層級的設定，由 CLI 或其他前端填入，整個流程唯讀"""
+    model_config = ConfigDict(extra="forbid")      # API 傳入拼錯的參數名稱時直接報錯，而不是默默忽略
     url: str = ""
     title: str = Field(default="media", description="無法從網站取得標題時使用的檔名")
     output: Path = Field(default=Path("downloads"), description="輸出資料夾")
