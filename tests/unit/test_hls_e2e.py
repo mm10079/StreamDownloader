@@ -6,11 +6,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 from Crypto.Cipher import AES
 
-from src.core.models import MediaJob, StreamKind, StreamSpec
-from src.core.options import Options
-from src.core.pipeline import Pipeline
-from src.protocol.hls.decrypt import resolve_iv
-from src.session import cookies as ct
+from streamdl.core.models import MediaJob, StreamKind, StreamSpec
+from streamdl.core.options import Options
+from streamdl.core.pipeline import Pipeline
+from streamdl.protocol.hls.decrypt import resolve_iv
+from streamdl.session import cookies as ct
 
 KEY = bytes(range(16))
 FIRST_EXISTING, FIRST_LISTED, LAST = 100, 110, 119      # 伺服器有 100~119，清單只列 110~119
@@ -101,7 +101,7 @@ def test_hls_backfill_decrypt_and_refresh(server, tmp_path, fetcher):
         job = MediaJob(streams=[StreamSpec(kind=StreamKind.HLS, url=f"{server}/live/master.m3u8",
                                            title="demo", session_id=session.id)])
         try:
-            return await pipe.execute(job)
+            return (await pipe.execute(job)).ok
         finally:
             await pipe.fetcher.aclose()
             await pipe.sessions.aclose()

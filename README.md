@@ -28,13 +28,25 @@
 - 需要瀏覽器的功能（ZAN-LIVE、瀏覽器監控）需安裝 Google Chrome
 - 執行檔未簽章，第一次執行時 SmartScreen 可能警告，點「其他資訊」→「仍要執行」
 
-### 方式二：原始碼
+### 方式二：pip 安裝（命令列與 Python 套件）
 
 需要 Python 3.11 以上與 ffmpeg（加入 PATH，或以 `--ffmpeg` 指定）。
 
 ```bash
+# 基本：直接下載串流網址（HLS / DASH / 一般檔案）、Twitter Space
+pip install "streamdl @ git+https://github.com/mm10079/StreamDownloader"
+
+# 加上瀏覽器功能：ZAN-LIVE、SINGULAR LIVE、瀏覽器監控、--fetcher browser
+pip install "streamdl[browser] @ git+https://github.com/mm10079/StreamDownloader"
+```
+
+repo 為私有時需先設定 GitHub 存取權（權杖或 SSH）。安裝後可使用 `streamdl` 指令，或 `python -m streamdl`。
+
+開發時從原始碼執行：
+
+```bash
 pip install -r requirements.txt
-python -m src --help
+python -m streamdl --help
 ```
 
 ## 使用方式
@@ -60,7 +72,7 @@ StreamDownloader.exe "https://example.com/watch/123"
 StreamDownloader.exe "https://www.zan-live.com/zh-TW/live/detail/10782"
 ```
 
-以原始碼執行時，把 `StreamDownloader.exe` 換成 `python -m src`。
+pip 安裝後把 `StreamDownloader.exe` 換成 `streamdl`；從原始碼執行則換成 `python -m streamdl`。
 
 ### 停止與續傳
 
@@ -69,6 +81,62 @@ StreamDownloader.exe "https://www.zan-live.com/zh-TW/live/detail/10782"
 - 第一次 **Ctrl+C**：停止追蹤直播的新片段，等待進行中的下載完成後照常合併
 - 第二次 **Ctrl+C**：立即中斷
 - 中斷或有片段失敗時，重新執行相同指令即可從進度接續
+
+## 在 Python 程式中使用
+
+```python
+import streamdl
+
+result = streamdl.download(
+    "https://example.com/live/master.m3u8",
+    output="downloads",
+    title="標題",
+    quality=0,                   # 所有命令列參數都可使用（底線取代連字號）
+)
+if result.ok:
+    print(result.files)          # 產生的檔案（串流輸出與附件）
+else:
+    print(result.error)          # 解析階段的錯誤
+    for s in result.streams:
+        print(s.title, s.ok, s.error, len(s.failed))
+```
+
+非同步程式（例如 FastAPI、discord.py）請使用 `await streamdl.adownload(...)`。
+
+**進度**：傳入 `progress_hook`，會收到 dict 事件：
+
+```python
+def hook(event):
+    if event["type"] == "progress":
+        # status：started / running / finished / error
+        print(event["description"], event["completed"], event["total"], event["status"])
+    else:                        # {"type": "log", "level": "INFO", "message": "..."}
+        print(event["level"], event["message"])
+
+streamdl.download(url, progress_hook=hook)
+```
+
+**當作套件使用時的行為**
+
+| 項目 | 行為 |
+|---|---|
+| 終端機輸出 | 不顯示 Rich 畫面；訊息寫入 `logging`（logger 名稱 `streamdl`），未設定 logging 時完全安靜 |
+| 互動詢問 | 不詢問（帳密、標題等）；需要時以參數傳入，例如 `account=…`、`password=…`。可用 `interactive=True` 開啟 |
+| 瀏覽器 | 下載完成後立即關閉（`interactive=True` 時才會等待 Enter） |
+| 停止 | 傳入 `stop=asyncio.Event()`，設定後停止追蹤直播並完成進行中的下載 |
+| 參數檢查 | 參數名稱拼錯會拋出 `pydantic.ValidationError` |
+| 並行 | 可同時執行多個 `adownload`，各自的 `progress_hook` 互不干擾 |
+
+回傳的 `DownloadResult`：
+
+| 欄位 | 說明 |
+|---|---|
+| `ok` | 沒有錯誤、有內容，且所有串流與附件都成功 |
+| `files` | 所有成功產生的檔案 |
+| `title` / `output_dir` / `extractor` | 標題、輸出資料夾、使用的提取器 |
+| `error` | 解析階段錯誤（不支援的網址、登入失敗等） |
+| `streams` | 每條串流：`title`、`kind`、`url`、`ok`、`output`（最終檔案）、`backup`（片段資料夾）、`failed`（失敗片段網址）、`error` |
+| `attachments` | 每個附件：`path`、`ok`、`url` |
 
 ## 支援的網站與模式
 
@@ -253,7 +321,7 @@ downloads/
 ## 開發
 
 ```bash
-pip install -r requirements.txt
+pip install -e ".[browser,dev]"
 python -m pytest            # 測試（不需要網路、Chrome 或 ffmpeg）
 ```
 

@@ -6,10 +6,10 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from src.core.models import MediaJob, StreamKind, StreamSpec
-from src.core.options import Options
-from src.core.pipeline import Pipeline
-from src.protocol.dash.parser import MpdError, fill_template, parse_duration, parse_mpd, to_url_template
+from streamdl.core.models import MediaJob, StreamKind, StreamSpec
+from streamdl.core.options import Options
+from streamdl.core.pipeline import Pipeline
+from streamdl.protocol.dash.parser import MpdError, fill_template, parse_duration, parse_mpd, to_url_template
 
 NS = 'xmlns="urn:mpeg:dash:schema:mpd:2011"'
 
@@ -176,7 +176,7 @@ def run_job(url, tmp_path, **opts):
         session = pipe.sessions.create()
         job = MediaJob(streams=[StreamSpec(kind=StreamKind.DASH, url=url, title="dash", session_id=session.id)])
         try:
-            return await pipe.execute(job)
+            return (await pipe.execute(job)).ok
         finally:
             await pipe.fetcher.aclose()
             await pipe.sessions.aclose()

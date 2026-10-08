@@ -1,6 +1,6 @@
 import asyncio
 
-from src.backfill import UrlDiffBackfill, build_template
+from streamdl.backfill import UrlDiffBackfill, build_template
 
 
 def test_template_zero_padded_path():

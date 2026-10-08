@@ -1,9 +1,9 @@
 import json
 from datetime import datetime, timedelta, timezone
 
-from src.extractor.adapters.zan_live import pages
-from src.extractor.adapters.zan_live.schema.item import LiveRoomMetas
-from src.extractor.adapters.zan_live.urls import ZanUrls, parse_detail, parse_playroom
+from streamdl.extractor.adapters.zan_live import pages
+from streamdl.extractor.adapters.zan_live.schema.item import LiveRoomMetas
+from streamdl.extractor.adapters.zan_live.urls import ZanUrls, parse_detail, parse_playroom
 
 NOW = datetime(2026, 10, 7, 20, 0, tzinfo=timezone.utc)
 

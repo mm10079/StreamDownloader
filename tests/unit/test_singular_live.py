@@ -9,12 +9,12 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from src.core.options import Options
-from src.core.pipeline import Pipeline
-from src.extractor.adapters.singular_live import extractor as sl_extractor
-from src.extractor.adapters.singular_live import pages
-from src.extractor.adapters.singular_live.extractor import SingularLiveExtractor
-from src.extractor.adapters.singular_live.urls import SingularUrls, parse_detail, parse_play
+from streamdl.core.options import Options
+from streamdl.core.pipeline import Pipeline
+from streamdl.extractor.adapters.singular_live import extractor as sl_extractor
+from streamdl.extractor.adapters.singular_live import pages
+from streamdl.extractor.adapters.singular_live.extractor import SingularLiveExtractor
+from streamdl.extractor.adapters.singular_live.urls import SingularUrls, parse_detail, parse_play
 
 from .test_zan_live_e2e import BROWSER_UA, FakeBrowser
 
@@ -258,7 +258,7 @@ def run_singular(base, tmp_path, browser_cls=None, **opts):
         try:
             job = await SingularLiveExtractor(urls).extract(f"https://singular-live.thinkr.jp/zh/event/detail/{EVENT_ID}",
                                                             pipe.ctx)
-            return job, await pipe.execute(job)
+            return job, (await pipe.execute(job)).ok
         finally:
             await pipe.fetcher.aclose()
             await pipe.sessions.aclose()

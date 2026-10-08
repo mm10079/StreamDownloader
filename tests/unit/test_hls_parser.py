@@ -1,5 +1,5 @@
-from src.protocol.hls import parser
-from src.protocol.hls.decrypt import resolve_iv
+from streamdl.protocol.hls import parser
+from streamdl.protocol.hls.decrypt import resolve_iv
 
 MASTER = """#EXTM3U
 #EXT-X-VERSION:3

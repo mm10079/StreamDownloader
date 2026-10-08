@@ -22,11 +22,11 @@ ffmpeg = find_ffmpeg()
 print(f"[spec] ffmpeg: {ffmpeg or '不內嵌'}")
 
 a = Analysis(
-    ["src/__main__.py"],
+    ["streamdl/__main__.py"],
     pathex=["."],
     binaries=[(ffmpeg, ".")] if ffmpeg else [],
     # 提取器以 pkgutil 動態載入、Fetcher / Protocol 為延遲匯入，必須明確收集
-    hiddenimports=collect_submodules("src") + collect_submodules("rich._unicode_data"),
+    hiddenimports=collect_submodules("streamdl") + collect_submodules("rich._unicode_data"),
     # 本專案不使用 GUI / 科學運算套件；環境中若有安裝會被間接拉入
     excludes=["tkinter", "pytest", "PyQt5", "PyQt6", "PySide2", "PySide6", "matplotlib",
               "numpy", "pandas", "scipy", "IPython", "PIL"],

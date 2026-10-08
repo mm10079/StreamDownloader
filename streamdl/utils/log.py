@@ -1,4 +1,7 @@
 """console.Message 的簡寫，讓業務程式碼只需要 `await log.info(...)`"""
+from contextvars import ContextVar
+from typing import Optional
+
 from rich.markup import escape
 
 from .console import Message, Color, LogLevel, Status
@@ -50,8 +53,15 @@ class Progress:
 
 # ---------------- 互動輸入 ----------------
 
+# None：依 stdin 是否為終端機判斷；True / False：強制（API 預設 False）
+INTERACTIVE: ContextVar[Optional[bool]] = ContextVar("streamdl_interactive", default=None)
+
 def interactive() -> bool:
+    """是否可以在終端機詢問使用者；API 呼叫時預設關閉（INTERACTIVE），避免卡住呼叫端"""
     import sys
+    forced = INTERACTIVE.get()
+    if forced is not None:
+        return forced
     return bool(sys.stdin) and sys.stdin.isatty()
 
 

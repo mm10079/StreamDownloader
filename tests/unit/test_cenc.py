@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from src.postprocess.cenc import CencError, decrypt_file
+from streamdl.postprocess.cenc import CencError, decrypt_file
 
 from .cenc_fixture import Scheme, encrypt_init, encrypt_segment, parse, synthetic_fmp4, walk
 

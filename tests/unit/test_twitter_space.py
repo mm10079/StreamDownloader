@@ -6,10 +6,10 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from src.core.options import Options
-from src.core.pipeline import Pipeline
-from src.extractor import find_extractor
-from src.extractor.adapters.twitter_space import TwitterSpaceExtractor, folder_name
+from streamdl.core.options import Options
+from streamdl.core.pipeline import Pipeline
+from streamdl.extractor import find_extractor
+from streamdl.extractor.adapters.twitter_space import TwitterSpaceExtractor, folder_name
 
 REAL_URL = ("https://prod-fastly-ap-northeast-1.video.pscp.tv/Transcoding/v1/hls/abc/non_transcode/ap-northeast-1/"
             "periscope-replay-direct-prod-ap-northeast-1-public/audio-space/master_playlist.m3u8")
@@ -82,7 +82,7 @@ def run(url, tmp_path, **opts):
         pipe = Pipeline(Options(output=tmp_path, merge=False, **opts))
         try:
             job = await TwitterSpaceExtractor().extract(url, pipe.ctx)
-            return job, await pipe.execute(job)
+            return job, (await pipe.execute(job)).ok
         finally:
             await pipe.fetcher.aclose()
             await pipe.sessions.aclose()

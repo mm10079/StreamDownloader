@@ -49,9 +49,12 @@ class ExtractContext:
         from pathlib import Path
         from ..driver import BrowserType, get_browser_class
         from ..utils import log
-        browser = get_browser_class(BrowserType.UC)()
-        if self.options.chrome_path:
+        try:
+            browser = get_browser_class(BrowserType.UC)()
             from undetected_chromedriver import ChromeOptions
+        except ImportError as e:
+            raise RuntimeError("此網址需要瀏覽器功能，請安裝：pip install \"streamdl[browser]\"") from e
+        if self.options.chrome_path:
             browser.options = ChromeOptions()
             browser.options.binary_location = self.options.chrome_path
         if profile and self.options.chrome_profile:

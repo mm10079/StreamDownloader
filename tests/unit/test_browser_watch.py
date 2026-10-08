@@ -2,14 +2,14 @@ import asyncio
 
 import pytest
 
-from src.core.models import MediaJob, StreamKind
-from src.core.options import Options
-from src.extractor import ExtractContext
-from src.extractor.adapters import browser_watch
-from src.extractor.adapters.browser_watch import BrowserWatchExtractor
-from src.extractor.adapters.zan_live.extractor import ZanLiveExtractor
-from src.session import SessionManager
-from src.utils import log
+from streamdl.core.models import MediaJob, StreamKind
+from streamdl.core.options import Options
+from streamdl.extractor import ExtractContext
+from streamdl.extractor.adapters import browser_watch
+from streamdl.extractor.adapters.browser_watch import BrowserWatchExtractor
+from streamdl.extractor.adapters.zan_live.extractor import ZanLiveExtractor
+from streamdl.session import SessionManager
+from streamdl.utils import log
 
 
 class ScriptedBrowser:

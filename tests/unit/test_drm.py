@@ -8,11 +8,11 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from src.core.models import MediaJob, StreamKind, StreamSpec
-from src.core.options import Options
-from src.core.pipeline import Pipeline
-from src.protocol.dash.parser import parse_mpd
-from src.protocol.hls import parser as hls
+from streamdl.core.models import MediaJob, StreamKind, StreamSpec
+from streamdl.core.options import Options
+from streamdl.core.pipeline import Pipeline
+from streamdl.protocol.dash.parser import parse_mpd
+from streamdl.protocol.hls import parser as hls
 
 from .cenc_fixture import Scheme, encrypt_init, encrypt_segment, parse, synthetic_fmp4
 
@@ -137,7 +137,7 @@ def run_dash(url, tmp_path, **opts):
         pipe = Pipeline(Options(output=tmp_path, merge=False, backfill=False, **opts))
         sid = pipe.sessions.create().id
         try:
-            return await pipe.execute(MediaJob(streams=[StreamSpec(kind=StreamKind.DASH, url=url, title="d", session_id=sid)]))
+            return (await pipe.execute(MediaJob(streams=[StreamSpec(kind=StreamKind.DASH, url=url, title="d", session_id=sid)]))).ok
         finally:
             await pipe.fetcher.aclose()
             await pipe.sessions.aclose()

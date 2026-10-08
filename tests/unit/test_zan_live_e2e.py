@@ -15,11 +15,11 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import pytest
 
-from src.core.options import Options
-from src.core.pipeline import Pipeline
-from src.extractor.adapters.zan_live.extractor import ZanLiveExtractor
-from src.extractor.adapters.zan_live.urls import ZanUrls
-from src.session import cookies as ct
+from streamdl.core.options import Options
+from streamdl.core.pipeline import Pipeline
+from streamdl.extractor.adapters.zan_live.extractor import ZanLiveExtractor
+from streamdl.extractor.adapters.zan_live.urls import ZanUrls
+from streamdl.session import cookies as ct
 
 from .test_zan_live import NOW, gift, ticket
 
@@ -187,7 +187,7 @@ def run_zan(server, tmp_path, url, before_execute=None, **opt_kwargs):
             job = await ZanLiveExtractor(urls=ZanUrls(domain=server)).extract(url, pipe.ctx)
             if before_execute:
                 before_execute()
-            return job, await pipe.execute(job)
+            return job, (await pipe.execute(job)).ok
         finally:
             await pipe.fetcher.aclose()
             await pipe.sessions.aclose()

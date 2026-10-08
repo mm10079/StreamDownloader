@@ -1,5 +1,6 @@
 import os
 import inspect
+from contextvars import ContextVar
 from enum import Enum
 from typing import Optional, Union, ClassVar
 from pydantic import BaseModel
@@ -70,6 +71,10 @@ class Color(str, Enum):
 
     def __str__(self):
         return self.value
+
+# 本次呼叫（及其衍生的 asyncio 任務）使用的 Pusher；asyncio 建立任務時會複製 context，因此子任務自動繼承
+CURRENT_PUSHER: ContextVar[Optional["BasePusher"]] = ContextVar("streamdl_pusher", default=None)
+
 
 class BasePusher(ABC):
     formatter: str = "{color}{status}{message}"
@@ -216,14 +221,18 @@ class Message(BaseModel):
             pass
 
     async def push(self):
-        """將訊息推送給註冊的 Pusher"""
+        """將訊息推送給目前的 Pusher
+
+        優先順序：本次呼叫的 Pusher（CURRENT_PUSHER，供 API 為每次下載指定）→ 全域註冊（CLI 的 RichPusher）
+        → 標準 logging（當作套件使用、未設定任何輸出時）"""
+        pusher = CURRENT_PUSHER.get() or self._pusher
+        if pusher is None:
+            from .reporters import default_pusher
+            pusher = default_pusher()
         # 💡 在進入 Pusher 前先抓取位置，確保層級正確
-        if self._pusher is not None:
-            if self._pusher.loglevel == LogLevel.DEBUG:
-                self.capture_caller_frame()
-            await self._pusher.push(self)
-        else:
-            print(f"{self.color}{self.message}")
+        if pusher.loglevel == LogLevel.DEBUG:
+            self.capture_caller_frame()
+        await pusher.push(self)
 
 
 class RichPusher(BasePusher):
@@ -332,8 +341,7 @@ class RichPusher(BasePusher):
             if update_kwargs:
                 progress.update(t_id, **update_kwargs)
 
-# 初始化：啟用 Debug 並註冊
-Message.register_pusher(RichPusher())
+# 不在 import 時註冊任何 Pusher：當作套件使用時不應接管呼叫端的終端機。CLI 啟動時才註冊 RichPusher。
 
 if __name__ == "__main__":
     import asyncio
