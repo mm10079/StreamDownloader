@@ -35,13 +35,17 @@ class StreamPaths:
         ├── playlists/               原始播放清單備份
         ├── fragments/               原始片段、金鑰、init、media.m3u8
         ├── decrypted/               (decrypt 選項) 解密後的片段與 media.m3u8
-        └── store.json               片段下載狀態，斷點續傳用
+        ├── store.json               片段下載狀態，斷點續傳用
+        └── {sub}/                   (sub) 分軌時各軌的資料夾，結構同上
+                                     例：HLS 有獨立音訊軌時為 video/、audio/，最上層只放主播放清單
     """
 
-    def __init__(self, output_dir: Path, title: str):
+    def __init__(self, output_dir: Path, title: str, sub: str = ""):
         self.title = sanitize_filename(title)
         self.output_dir = Path(output_dir)
         self.backup = self.output_dir / "backup" / self.title
+        if sub:
+            self.backup = self.backup / sub
         self.playlists = self.backup / "playlists"
         self.fragments = self.backup / "fragments"
         self.decrypted = self.backup / "decrypted"

@@ -1,7 +1,9 @@
 import os
 from pathlib import Path
 from typing import Literal, Optional
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from .keys import parse_keys
 
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -31,7 +33,9 @@ class Options(BaseModel):
     backfill: bool = Field(default=True, description="嘗試回溯播放清單以外的較早片段")
     backfill_distance: int = Field(default=10000, description="連續序號時往回搜尋的最大距離")
     decrypt: bool = Field(default=False, description="下載中同步解密片段")
-    key: str = Field(default="", description="CENC 解密金鑰 KID:KEY（hex），多組以逗號分隔；只有一組且不知道 KID 時可只填 KEY。"
+    key: str = Field(default="", description="解密金鑰（hex）：KID:KEY，不知道 KID 時可只填 KEY；多組以逗號分隔。"
+                                              "也可填金鑰檔路徑（每行一組，可混用 hex / UUID / base64 / ClearKey JSON / 16 bytes 二進位）。"
+                                              "不確定哪一組正確時可全部列出，會依 KID 對應或以實際片段試解自動選出。"
                                               "僅適用於你合法持有金鑰的內容")
     merge: bool = Field(default=True, description="完成後以 ffmpeg 合併")
     ffmpeg: str = Field(default="ffmpeg", description="ffmpeg 路徑（exe 版已內嵌）")
@@ -64,17 +68,21 @@ class Options(BaseModel):
     keep_browser: bool = Field(default=True, description="全部任務結束後保持瀏覽器開啟（可繼續觀看直播），按 Enter 才關閉；"
                                                          "僅在終端機互動模式下有效")
 
+    @field_validator("key")
+    @classmethod
+    def _normalize_key(cls, value: str) -> str:
+        """讀取金鑰檔、辨識各種寫法，統一為「KID:KEY,KEY」（小寫 hex）；無法辨識時在建立 Options 時就報錯"""
+        return ",".join(f"{kid}:{key}" if kid else key for kid, key in parse_keys(value))
+
+    @property
+    def key_list(self) -> list[tuple[str, str]]:
+        """全部金鑰 [(kid, key)]，保留順序與未指定 KID 的多組金鑰"""
+        return [(kid, key) for kid, _, key in (item.rpartition(":") for item in self.key.split(",") if item)]
+
     @property
     def key_map(self) -> dict[str, str]:
-        """{kid（小寫、無連字號）: key}；未指定 KID 的金鑰放在 "" """
-        result = {}
-        for item in self.key.split(","):
-            item = item.strip().replace("-", "").lower()
-            if not item:
-                continue
-            kid, _, key = item.rpartition(":")
-            result[kid] = key
-        return result
+        """{kid: key}；未指定 KID 的金鑰放在 "" """
+        return dict(self.key_list)
 
     @property
     def skip_set(self) -> set[str]:

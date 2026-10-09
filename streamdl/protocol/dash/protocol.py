@@ -21,7 +21,7 @@ from ...core.models import StreamKind
 from ...core.store import Segment, SegmentStore, SegStatus
 from ...fetcher import FetchRequest, fetch_with_retry, request_text
 from ...postprocess import mux_tracks
-from ...postprocess.cenc import decrypt_cenc, looks_decodable
+from ...postprocess.cenc import decrypt_cenc, looks_decodable, pick_cenc_key
 from ...postprocess.progress import run_in_thread
 from ...utils import log
 from ...utils.paths import StreamPaths, url_basename
@@ -52,6 +52,7 @@ class Track:
         self.hints: list[int] = []
         self.progress: Optional[log.Progress] = None
         self.decrypt_key: Optional[str] = None      # CENC 金鑰（hex）
+        self.key_candidates: list[str] = []         # 無法依 KID 對應的多組 --key，完成後試解選出 decrypt_key
         self.kid: Optional[str] = None
         self._since_save = 0
         self._init_lock = asyncio.Lock()
@@ -163,6 +164,14 @@ class Track:
         await self.update_progress()
 
     # ---------- 收尾 ----------
+    def sample(self) -> Path:
+        """init + 第一個片段，供試解金鑰"""
+        out = self.dir / "keytest.mp4"
+        first = next(self.store.ordered())
+        out.write_bytes((self.init_file.read_bytes() if self.init_file else b"")
+                        + (self.fragments / first.filename).read_bytes())
+        return out
+
     def concat(self, report=lambda n: None) -> Path:
         """init + 所有片段依序串接成單一 fMP4；report(已串接片段數) 供顯示進度"""
         out = self.dir / f"{self.kind}.mp4"
@@ -257,34 +266,43 @@ class DashProtocol(StreamProtocol):
             chosen.append(("audio", audios[0]))
         if not chosen:
             raise StreamError("MPD 中沒有影像或音訊軌")
-        keys = [await self._resolve_key(rep) for _, rep in chosen]     # 先確認金鑰，避免下載後才發現無法解密
+        keys = [await self._resolve_keys(rep) for _, rep in chosen]    # 先確認金鑰，避免下載後才發現無法解密
         tracks = []
-        for (kind, rep), key in zip(chosen, keys):
+        for (kind, rep), cands in zip(chosen, keys):
             track = Track(self, kind, rep)
-            track.decrypt_key, track.kid = key, rep.default_kid
+            track.kid = rep.default_kid
+            if len(cands) == 1:
+                track.decrypt_key = cands[0]
+            elif cands:
+                track.key_candidates = cands
+                await log.info(f"[{track.title}] --key 有 {len(cands)} 組無法依 KID 對應的金鑰，下載完成後以片段試解選出")
             tracks.append(track)
         return tracks
 
-    async def _resolve_key(self, rep: Representation) -> Optional[str]:
-        """加密軌的解密金鑰：--key（依 KID 對應）→ ClearKey 授權伺服器；都沒有則無法下載"""
+    async def _resolve_keys(self, rep: Representation) -> list[str]:
+        """加密軌的候選解密金鑰：--key 依 KID 對應 → 未指定 KID 的 --key（MPD 未標示 KID 時含全部 --key）
+        → ClearKey 授權伺服器；都沒有則無法下載。候選多於一組時於完成後試解選出"""
         if not rep.protected:
-            return None
-        keys = self.ctx.options.key_map
-        key = keys.get(rep.default_kid or "") or keys.get("")
-        if key:
-            return key
+            return []
+        keys = self.ctx.options.key_list
+        match = [k for kid, k in keys if kid and kid == rep.default_kid]
+        if match:
+            return match[:1]
+        cands = [k for kid, k in keys if not kid or not rep.default_kid]
+        if cands:
+            return cands
         if rep.clearkey_laurl and rep.default_kid:
             if rep.default_kid not in self._clearkeys:     # 影像與音訊常共用同一個 KID
                 self._clearkeys[rep.default_kid] = await self._clearkey_license(rep.clearkey_laurl, rep.default_kid)
                 if self._clearkeys[rep.default_kid]:
                     await log.info(f"[{self.paths.title}] 已從 ClearKey 授權伺服器取得金鑰（KID {rep.default_kid}）")
             if self._clearkeys[rep.default_kid]:
-                return self._clearkeys[rep.default_kid]
+                return [self._clearkeys[rep.default_kid]]
         kid = f"（KID {rep.default_kid}）" if rep.default_kid else ""
         drm = [name for name in rep.drm_systems if name != "ClearKey"]
-        if drm:
-            raise StreamError(f"此串流受 DRM 保護（{'、'.join(drm)}）{kid}：金鑰只提供給授權的解密模組，無法下載解密。"
-                              f"若你合法持有金鑰，可用 --key KID:KEY 提供")
+        # if drm:
+        #     raise StreamError(f"此串流受 DRM 保護（{'、'.join(drm)}）{kid}：金鑰只提供給授權的解密模組，無法下載解密。"
+        #                       f"若你合法持有金鑰，可用 --key KID:KEY 提供")
         if rep.clearkey_laurl:
             raise StreamError(f"ClearKey 授權伺服器沒有提供金鑰{kid}；可用 --key KID:KEY 提供")
         raise StreamError(f"此串流已加密（CENC）{kid}，但 MPD 未提供取得金鑰的方式；可用 --key KID:KEY 提供")
@@ -364,6 +382,18 @@ class DashProtocol(StreamProtocol):
         files = []
         for track in self.tracks:
             path = await run_in_thread(f"串接 {track.title}", len(track.store), track.concat)
+            if track.key_candidates:
+                sample = track.sample()
+                track.decrypt_key = await pick_cenc_key(sample, track.key_candidates, self.ctx.options.ffmpeg)
+                sample.unlink(missing_ok=True)
+                track.kid = None        # 試解選出的金鑰不一定對應 MPD 的 KID，解密時不指定 KID
+                if track.decrypt_key is None:
+                    track.decrypt_key = track.key_candidates[0]
+                    await log.warning(f"[{track.title}] 金鑰試解：{len(track.key_candidates)} 組都無法正常解碼，"
+                                      f"使用第一組（{track.decrypt_key}）")
+                else:
+                    idx = track.key_candidates.index(track.decrypt_key) + 1
+                    await log.info(f"[{track.title}] 金鑰試解：第 {idx} 組正確（{track.decrypt_key}）")
             if track.decrypt_key:
                 plain = path.with_name(f"{track.kind}.decrypted.mp4")
                 if not await decrypt_cenc(path, plain, track.decrypt_key, track.kid, self.ctx.options.ffmpeg,

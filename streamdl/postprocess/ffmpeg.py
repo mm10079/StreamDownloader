@@ -1,4 +1,5 @@
 import asyncio
+import os
 import re
 import shutil
 import sys
@@ -84,8 +85,9 @@ def _error_lines(text: str) -> str:
     return "\n".join(lines[-8:]) or text[-800:]
 
 
-async def merge_playlist(playlist: Path, output: Path, ffmpeg: str = "ffmpeg") -> bool:
-    """以本地 m3u8 合併片段（含解密）為單一檔案"""
+async def merge_playlist(playlist: Path, output: Path, ffmpeg: str = "ffmpeg",
+                         audio: Optional[Path] = None) -> bool:
+    """以本地 m3u8 合併片段（含解密）為單一檔案；audio 為獨立音訊軌的本地 m3u8 時，取 playlist 的影像與 audio 的音訊"""
     exe = find_ffmpeg(ffmpeg)
     if exe is None:
         await log.error("找不到 ffmpeg，請以 --ffmpeg 指定路徑；片段已保留在 backup 資料夾")
@@ -95,10 +97,13 @@ async def merge_playlist(playlist: Path, output: Path, ffmpeg: str = "ffmpeg") -
         return True
     output.parent.mkdir(parents=True, exist_ok=True)
     tmp = output.with_name(output.stem + ".merging" + output.suffix)
-    code, err = await run_ffmpeg(exe, [
-        "-allowed_extensions", "ALL", "-protocol_whitelist", "file,crypto",
-        "-i", playlist.name, "-c", "copy", str(tmp.resolve())],
-        label=f"合併 {output.name}", cwd=playlist.parent, done=f"合併完成：{output}")
+    input_opts = ["-allowed_extensions", "ALL", "-protocol_whitelist", "file,crypto"]
+    args = [*input_opts, "-i", playlist.name]
+    if audio is not None:
+        rel = os.path.relpath(audio, playlist.parent).replace("\\", "/")
+        args += [*input_opts, "-i", rel, "-map", "0:v?", "-map", "1:a"]
+    code, err = await run_ffmpeg(exe, [*args, "-c", "copy", str(tmp.resolve())],
+                                 label=f"合併 {output.name}", cwd=playlist.parent, done=f"合併完成：{output}")
     if code != 0:
         tmp.unlink(missing_ok=True)
         await log.error(f"ffmpeg 合併失敗（{code}）：{_error_lines(err)}")

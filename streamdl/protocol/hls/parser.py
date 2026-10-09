@@ -27,7 +27,9 @@ class Rendition:
     group_id: str
     uri: str = ""
     name: str = ""
+    language: str = ""
     default: bool = False
+    autoselect: bool = False
 
 
 @dataclass
@@ -35,6 +37,16 @@ class MasterPlaylist:
     url: str
     variants: list[Variant] = field(default_factory=list)       # 依頻寬由高到低
     renditions: list[Rendition] = field(default_factory=list)
+
+    def audio_for(self, variant: Variant) -> Optional[Rendition]:
+        """畫質對應的獨立音訊軌（AUDIO 群組中有 URI 的 EXT-X-MEDIA）：優先 DEFAULT，其次 AUTOSELECT，否則第一個。
+        沒有 URI 的表示音訊已包含在畫質的片段中"""
+        if not variant.audio_group:
+            return None
+        cands = [r for r in self.renditions if r.type == "AUDIO" and r.group_id == variant.audio_group and r.uri]
+        return (next((r for r in cands if r.default), None)
+                or next((r for r in cands if r.autoselect), None)
+                or (cands[0] if cands else None))
 
 
 @dataclass
@@ -130,7 +142,9 @@ def parse_master(text: str, url: str) -> MasterPlaylist:
                 group_id=attrs.get("GROUP-ID", ""),
                 uri=urljoin(url, attrs["URI"]) if attrs.get("URI") else "",
                 name=attrs.get("NAME", ""),
+                language=attrs.get("LANGUAGE", ""),
                 default=attrs.get("DEFAULT") == "YES",
+                autoselect=attrs.get("AUTOSELECT") == "YES",
             ))
     master.variants.sort(key=lambda v: v.bandwidth, reverse=True)
     return master

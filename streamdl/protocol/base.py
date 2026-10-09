@@ -26,6 +26,7 @@ class StreamResult:
     complete: bool                          # 所有片段皆成功
     output: Optional[Path] = None           # 已是最終檔案（FILE）或合併目標路徑
     playlist: Optional[Path] = None         # 待合併的本地播放清單
+    audio_playlist: Optional[Path] = None   # 獨立音訊軌的本地播放清單（HLS EXT-X-MEDIA），與 playlist 一起合併
     failed: list[str] = field(default_factory=list)
 
 

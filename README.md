@@ -6,7 +6,7 @@
 
 | 功能 | 說明 |
 |---|---|
-| HLS | 主播放清單畫質選擇、AES-128 / SAMPLE-AES 解密（含未提供 IV 時依序號推算）、EXT-X-MAP、BYTERANGE |
+| HLS | 主播放清單畫質選擇、獨立音訊軌（EXT-X-MEDIA）自動一併下載並合併（分存於 `backup/{標題}/video`、`audio`）、AES-128 / SAMPLE-AES 解密（含未提供 IV 時依序號推算）、EXT-X-MAP、BYTERANGE |
 | DASH | SegmentTemplate（`$Number$` / `$Time$` / SegmentTimeline）、SegmentList、SegmentBase；影像與音訊分軌下載後合併 |
 | 直播 | 持續監控播放清單 / MPD，直到直播結束或連續沒有新片段 |
 | 回溯（自動探測） | 由片段網址推出模板，探測播放清單以外的較早片段（詳見下方） |
@@ -73,6 +73,13 @@ StreamDownloader.exe "https://www.zan-live.com/zh-TW/live/detail/10782"
 ```
 
 pip 安裝後把 `StreamDownloader.exe` 換成 `streamdl`；從原始碼執行則換成 `python -m streamdl`。
+
+### 直接播放下載中的片段（`tools/play_m3u8.bat`）
+
+把 `backup/標題/` 中的 `media.m3u8` 拖曳到 `tools/play_m3u8.bat` 上，即以 ffplay 播放（需 ffplay 在 PATH 或放在同資料夾）：
+
+- 會一併讀取本地金鑰檔（`.key`）解密播放；一般播放器會擋下非影音副檔名的金鑰檔，也多半不支援 SAMPLE-AES
+- 拖入分軌下載的 `video/fragments/media.m3u8` 時，會自動產生 `play.m3u8` 把 `audio/` 音軌一起播放
 
 ### 停止與續傳
 
@@ -245,12 +252,17 @@ StreamDownloader.exe "網址" --chrome-profile "%LOCALAPPDATA%\StreamDownloader\
 | 類型 | 能否下載 | 方式 |
 |---|---|---|
 | HLS AES-128 / SAMPLE-AES（金鑰為一般網址） | ✅ | 自動下載金鑰並解密 |
+| HLS SAMPLE-AES fMP4（cbcs），且你持有金鑰 | ✅ | `--key KID:KEY`；影像與音訊不同 KID 時依 KID 自動對應，合併時由 ffmpeg 解密 |
 | DASH ClearKey | ✅ | 自動向 MPD 中的授權伺服器取得明文金鑰 |
 | DASH / fMP4 CENC，且你持有金鑰 | ✅ | `--key KID:KEY`（支援 cenc、cbcs） |
-| Widevine / PlayReady / FairPlay | ❌ | 偵測到時直接回報，不會下載 |
+| Widevine / PlayReady / FairPlay | 沒有金鑰 ❌ | 沒有 `--key` 時偵測到即回報，不會下載；以 `--key` 提供金鑰即可照常下載解密 |
 
 - **為什麼 Widevine 等無法下載**：這類 DRM 的金鑰只會交給瀏覽器或裝置內經過授權的解密模組（CDM），網頁與下載器都拿不到。取得金鑰需要規避技術保護措施，在台灣（著作權法第 80 條之 2）、日本、美國（DMCA §1201）皆屬違法，本工具不支援。
 - **`--key` 格式**：`KID:KEY`（32 位 hex，KID 可含連字號），多組以逗號分隔；只有一組且不知道 KID 時可只填 `KEY`。僅適用於你合法持有金鑰的內容（例如自己的影片、服務方提供的金鑰）。
+- **金鑰檔**：和 `--cookies` 一樣，`--key` 可直接填檔案路徑，例如 `--key keys.txt`。檔案中每行一組，`KID:KEY`、只有 `KEY`、UUID 形式的 KID、base64、其他工具輸出的整行（如 `--key KID:KEY`）、ClearKey JSON、16 bytes 二進位的 `.key` 檔都能辨識；`#` 開頭的行與沒有金鑰的文字會略過。也可與金鑰字串混用：`--key "keys.txt,KID:KEY"`。
+- **多組金鑰自動試解**：不確定哪一組正確時可全部列出，會以實際片段試解選出正確的一組（log 顯示「金鑰試解：第 N 組正確」）；都試不出來時使用第一組，照常下載解密。只有一組時直接使用，不試解。
+  - HLS：fMP4 片段（含 SAMPLE-AES）先讀 init 標示的 KID，選用 KID 相同的金鑰（影像與音訊常是不同 KID）；對應不上時再試解——AES-128 檢查 PKCS7 填充與 TS / fMP4 等格式特徵，SAMPLE-AES fMP4 交給 ffmpeg 試解碼
+  - DASH：KID 對應得上就直接使用；對應不上的（未指定 KID，或 MPD 沒標示 KID）於下載完成後以 init + 第一個片段解密，交給 ffmpeg 試解碼選出
 - 解密使用內建實作（cenc / cbcs）；若已安裝 Bento4 的 `mp4decrypt` 會優先使用。
 - 解密後會以 ffmpeg 試解前幾秒，若無法正常解碼會提示「金鑰可能錯誤」（AES-CTR 無法從密文判斷金鑰是否正確）。
 
@@ -269,6 +281,16 @@ downloads/
     ├── decrypted/              --decrypt 時的解密片段
     ├── video/ audio/           DASH 各軌的片段、串接後的 video.mp4 / audio.mp4（加密時另有 *.decrypted.mp4）
     └── store.json              片段下載狀態（續傳用）
+```
+
+HLS 有獨立音訊軌（`EXT-X-MEDIA`）時，影像與音訊分開存放，最上層只有主播放清單：
+
+```
+backup/標題/
+├── playlists/                  主播放清單備份
+├── video/                      影像：playlists/、fragments/（含 media.m3u8）、decrypted/、store.json
+├── audio/                      音訊：結構同上
+└── play.m3u8                   以 tools/play_m3u8.bat 播放時產生（影像 + 音訊）
 ```
 
 確認合併結果無誤後，`backup/` 可以刪除。
@@ -292,7 +314,7 @@ downloads/
 | `--backfill` / `--no-backfill` | 開 | 回溯較早片段 |
 | `--backfill-distance` | 10000 | 連續序號時每輪往回探測的距離 |
 | `--decrypt` / `--no-decrypt` | 關 | 下載中同步解密 HLS AES-128 片段 |
-| `--key` | | CENC 解密金鑰 `KID:KEY`，多組以逗號分隔（僅限合法持有的金鑰） |
+| `--key` | | 解密金鑰 `KID:KEY` 或 `KEY`，或金鑰檔路徑（每行一組）；多組以逗號分隔，會依 KID 對應或試解選出正確的一組（僅限合法持有的金鑰） |
 | `--merge` / `--no-merge` | 開 | 完成後以 ffmpeg 合併 |
 | `--ffmpeg` | ffmpeg | ffmpeg 路徑（exe 版已內嵌） |
 | `--live-idle-limit` | 10 | 直播連續幾次沒有新片段就視為結束 |
@@ -313,7 +335,8 @@ downloads/
 
 - Widevine / PlayReady / FairPlay 等 DRM 不支援（見「加密內容與 DRM」）。
 - CENC 解密不支援以 `saio` 指向 mdat 的輔助資訊格式，以及 `tfhd` 帶絕對 `base_data_offset` 的檔案（可安裝 `mp4decrypt` 處理）。
-- HLS 的獨立音軌（`EXT-X-MEDIA TYPE=AUDIO` 帶 URI）目前只下載影像軌；DASH 會自動下載影像與音訊。
+- HLS 獨立音軌只下載一條（優先 `DEFAULT=YES`，其次 `AUTOSELECT=YES`），目前無法指定語言。
+- 影像與音訊分軌下載（HLS 獨立音軌、DASH）時，若兩軌的起點不同（例如回溯找到的範圍不同、直播中途開始下載），合併後可能影音不同步。
 - DASH 多 Period（例如插入廣告）只下載第一個 Period（直播為目前的 Period）。
 - 字幕軌目前略過。
 - aria2 下載方式已實作但尚未實測。

@@ -355,11 +355,64 @@ async def decrypt_cenc(src: Path, dst: Path, key: str, kid: Optional[str] = None
     return True
 
 
-async def looks_decodable(path: Path, ffmpeg: str = "ffmpeg", seconds: int = 3) -> Optional[bool]:
+def init_kids(init: Path) -> list[str]:
+    """init 片段（moov）中各加密軌的 KID（tenc default_KID，hex）；未加密或無法解析時回傳空清單"""
+    try:
+        buf = bytearray(init.read_bytes())
+        for typ, _, payload, end in _boxes(buf, 0, len(buf)):
+            if typ == b"moov":
+                return [t.kid for t in process_moov(buf, payload, end).values() if t.kid]
+    except (CencError, OSError, struct.error):
+        pass
+    return []
+
+
+async def looks_decodable(path: Path, ffmpeg: str = "ffmpeg", seconds: int = 3,
+                          decryption_key: Optional[str] = None) -> Optional[bool]:
     """以 ffmpeg 試解前幾秒；AES-CTR 無法從密文判斷金鑰是否正確，錯誤金鑰只會得到雜訊。
-    回傳 None 表示沒有 ffmpeg 無法檢查"""
+    decryption_key：交給 ffmpeg 的 mov 解析器解密（cenc / cbcs）後再試解。回傳 None 表示沒有 ffmpeg 無法檢查"""
     exe = find_ffmpeg(ffmpeg)
     if exe is None:
         return None
-    code, out = await _run([exe, "-v", "error", "-t", str(seconds), "-i", str(path), "-f", "null", "-"])
+    key = ["-decryption_key", decryption_key] if decryption_key else []
+    code, out = await _run([exe, "-v", "error", *key, "-t", str(seconds), "-i", str(path), "-f", "null", "-"])
     return code == 0 and not out.strip()
+
+
+async def pick_cenc_key(sample: Path, keys: list[str], ffmpeg: str = "ffmpeg",
+                        via_ffmpeg: bool = False) -> Optional[str]:
+    """多組候選金鑰時，以樣本（init + 一個片段）逐一解密並以 ffmpeg 試解碼，回傳可正常解碼的金鑰。
+    via_ffmpeg：直接交給 ffmpeg 解密（HLS SAMPLE-AES fMP4 合併時就是由 ffmpeg 解密）；
+    否則以 mp4decrypt / 內建解密，內建不支援此格式時改由 ffmpeg。
+    全部無法解碼回傳 None；沒有 ffmpeg 無法判斷時回傳第一組"""
+    if len(keys) <= 1:
+        return keys[0] if keys else None
+    if find_ffmpeg(ffmpeg) is None:
+        await log.warning("找不到 ffmpeg，無法試解判斷金鑰，使用第一組")
+        return keys[0]
+    tool = None if via_ffmpeg else shutil.which("mp4decrypt")
+    out = sample.with_name(sample.stem + ".trial" + sample.suffix)
+    try:
+        for key in keys:
+            out.unlink(missing_ok=True)
+            if via_ffmpeg:
+                if await looks_decodable(sample, ffmpeg, decryption_key=key):
+                    return key
+                continue
+            if tool:
+                code, _ = await _run([tool, "--key", f"1:{key}", str(sample), str(out)])
+                if code != 0:
+                    continue
+            else:
+                try:
+                    await asyncio.to_thread(decrypt_file, sample, out, {"": key})
+                except CencError:       # 內建解密不支援此格式，與金鑰無關 → 改由 ffmpeg 解密試解
+                    via_ffmpeg = True
+                    if await looks_decodable(sample, ffmpeg, decryption_key=key):
+                        return key
+                    continue
+            if await looks_decodable(out, ffmpeg):
+                return key
+    finally:
+        out.unlink(missing_ok=True)
+    return None

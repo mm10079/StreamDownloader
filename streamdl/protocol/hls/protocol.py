@@ -12,7 +12,8 @@ from ...utils import log
 from ...utils.paths import StreamPaths, url_basename
 from ..base import StreamContext, StreamError, StreamProtocol, StreamResult
 from . import parser
-from .decrypt import decrypt_aes128, resolve_iv
+from ...postprocess.cenc import init_kids, pick_cenc_key
+from .decrypt import check_aes128, decrypt_aes128, resolve_iv
 
 AUDIO_EXTS = {"aac", "m4a", "mp3"}
 SAVE_EVERY = 20
@@ -21,9 +22,13 @@ SAVE_EVERY = 20
 class HlsProtocol(StreamProtocol):
     kind = StreamKind.HLS
 
-    def __init__(self, ctx: StreamContext):
+    def __init__(self, ctx: StreamContext, track: str = "main"):
+        """track：main 為畫質（影像，或已含音訊）；audio 為主播放清單 EXT-X-MEDIA 指定的獨立音訊軌，由 main 建立並同時下載。
+        有獨立音訊軌時，影像存在 backup/{title}/video/、音訊存在 backup/{title}/audio/；否則直接存在 backup/{title}/"""
         super().__init__(ctx)
-        self.paths = StreamPaths(ctx.output_dir, ctx.stream.title)
+        self.track = track
+        self.paths = StreamPaths(ctx.output_dir, ctx.stream.title, sub="audio" if track == "audio" else "")
+        self.name = self.paths.title + (" [audio]" if track == "audio" else "")
         self.store: SegmentStore
         self.master_url: Optional[str] = None
         self.media_url = ctx.stream.url
@@ -32,27 +37,36 @@ class HlsProtocol(StreamProtocol):
         self._rebase: Callable[[parser.HlsSegment], str] = lambda seg: seg.uri
         self._key_locks: dict[str, asyncio.Lock] = {}
         self._key_bytes: dict[str, bytes] = {}
-        self._user_key = self._parse_user_key(ctx.options.key_map)
+        self._user_keys = self._parse_user_keys(ctx.options.key_list)
         self._tg: Optional[asyncio.TaskGroup] = None
         self._progress: Optional[log.Progress] = None
         self._since_save = 0
+        self.audio_url: Optional[str] = None            # main：選定畫質的獨立音訊軌網址
+        self.audio: Optional["HlsProtocol"] = None
+        self._audio_result: Optional[StreamResult] = None
 
     # ======================================================================
     # 主流程
     # ======================================================================
     async def run(self) -> StreamResult:
         opts = self.ctx.options
+        playlist = await self._load_first_playlist()        # 決定是否有獨立音訊軌，影響資料夾位置
         self.paths.ensure(decrypted=opts.decrypt)
         self.store = SegmentStore.load(self.paths.store)
-
-        playlist = await self._load_first_playlist()
         await self._setup_keying(playlist)
         self._ingest(playlist)
+        if self.track == "main" and self.audio_url:
+            self.audio = HlsProtocol(self.ctx, track="audio")
+
+        if len(self._user_keys) > 1:
+            await self._verify_user_keys()
 
         self._progress = await log.Progress.create(self.paths.title, total=len(self.store))
         try:
             async with asyncio.TaskGroup() as tg:
                 self._tg = tg
+                if self.audio is not None:
+                    tg.create_task(self._run_audio())
                 for seg in self.store.pending():
                     self._schedule(seg)
                 if self.backfill_enabled and self.template is not None and self.store.data.key_mode == "template":
@@ -64,6 +78,17 @@ class HlsProtocol(StreamProtocol):
 
         return await self._finish()
 
+    async def _run_audio(self) -> None:
+        """音訊軌失敗不中斷影像下載，但整體視為未完成（不合併）"""
+        try:
+            self._audio_result = await self.audio.run()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            msg = str(e) if isinstance(e, StreamError) else f"{type(e).__name__}: {e}"
+            await log.error(f"[{self.audio.name}] 音訊軌下載失敗：{msg}")
+            self._audio_result = StreamResult(complete=False, failed=[f"音訊軌：{msg}"])
+
     async def _guard(self, coro, name: str) -> None:
         """背景工作失敗只記錄，不中斷其他片段的下載"""
         try:
@@ -71,7 +96,7 @@ class HlsProtocol(StreamProtocol):
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            await log.error(f"[{self.paths.title}] {name}失敗：{type(e).__name__}: {e}")
+            await log.error(f"[{self.name}] {name}失敗：{type(e).__name__}: {e}")
 
     # ======================================================================
     # 播放清單
@@ -82,17 +107,20 @@ class HlsProtocol(StreamProtocol):
             raise StreamError(f"無法讀取播放清單 (HTTP {status}): {self.ctx.stream.url}")
         if parser.is_master(text):
             self.master_url = self.ctx.stream.url
-            self._backup(self.master_url, text)
+            if self.track == "main":
+                self._backup(self.master_url, text)     # 主播放清單放在 backup/{title}/playlists
             await self._select_variant(text)
+            if self.track == "main" and self.audio_url:
+                self.paths = StreamPaths(self.ctx.output_dir, self.ctx.stream.title, sub="video")
             text = None
         playlist = await self._load_media(text)
         if playlist is None or not playlist.segments:
             raise StreamError(f"媒體播放清單沒有片段: {self.media_url}")
         drm = next((s.key for s in playlist.segments if s.key and s.key.drm), None)
-        if drm is not None and self._user_key is None:
+        if drm is not None and not self._user_keys:
             raise StreamError(f"此串流受 DRM 保護（{drm.drm_name}），金鑰只提供給授權的解密模組，無法下載解密。"
                               f"若你合法持有金鑰，可用 --key KEY 提供")
-        await log.info(f"[{self.paths.title}] 媒體播放清單：{self.media_url}"
+        await log.info(f"[{self.name}] 媒體播放清單：{self.media_url}"
                        f"（{'直播' if playlist.is_live else 'VOD'}，{len(playlist.segments)} 個片段）")
         return playlist
 
@@ -105,11 +133,21 @@ class HlsProtocol(StreamProtocol):
         if not master.variants:
             raise StreamError("主播放清單沒有任何畫質")
         variant = master.variants[min(self.ctx.stream.quality, len(master.variants) - 1)]
+        audio = master.audio_for(variant)
+        if self.track == "audio":
+            if audio is None:
+                raise StreamError(f"主播放清單中找不到音訊軌（{variant.audio_group}）")
+            if audio.uri != self.media_url:
+                self.media_url = audio.uri
+                others = [r.name or r.language for r in master.renditions
+                          if r.type == "AUDIO" and r.group_id == audio.group_id and r.uri and r is not audio]
+                await log.info(f"[{self.name}] 選擇音訊軌：{audio.name or audio.language or audio.group_id}"
+                               + (f"（其他：{'、'.join(others)}）" if others else ""))
+            return True
         if variant.uri != self.media_url:
             self.media_url = variant.uri
-            await log.info(f"[{self.paths.title}] 選擇畫質：{variant.name or variant.resolution or variant.bandwidth}")
-        if variant.audio_group and any(r.uri for r in master.renditions if r.group_id == variant.audio_group):
-            await log.warning(f"[{self.paths.title}] 音訊為獨立軌道（{variant.audio_group}），目前僅下載影像軌")
+            await log.info(f"[{self.name}] 選擇畫質：{variant.name or variant.resolution or variant.bandwidth}")
+        self.audio_url = audio.uri if audio else None
         return True
 
     async def _load_media(self, text: Optional[str] = None) -> Optional[parser.MediaPlaylist]:
@@ -124,6 +162,7 @@ class HlsProtocol(StreamProtocol):
 
     def _backup(self, url: str, text: str) -> None:
         name = url_basename(url) or "playlist.m3u8"
+        self.paths.playlists.mkdir(parents=True, exist_ok=True)
         (self.paths.playlists / name).write_text(text, encoding="utf-8")
 
     # ======================================================================
@@ -137,7 +176,7 @@ class HlsProtocol(StreamProtocol):
         if len(candidates) > 1 and not await self._probe(candidates[0]):
             for idx, url in enumerate(candidates[1:], start=1):
                 if await self._probe(url):
-                    await log.info(f"[{self.paths.title}] 片段網址改用替代路徑：{url}")
+                    await log.info(f"[{self.name}] 片段網址改用替代路徑：{url}")
                     self._rebase = lambda seg, i=idx: self._segment_candidates(seg.raw_uri)[i]
                     break
 
@@ -160,11 +199,11 @@ class HlsProtocol(StreamProtocol):
         self.store.data.source_url = self.ctx.stream.url
         self.store.data.header_lines = pl.header_lines
         if self.template:
-            await log.debug(f"[{self.paths.title}] 網址模板：{self.template.pattern}（間距 {self.template.space}）")
+            await log.debug(f"[{self.name}] 網址模板：{self.template.pattern}（間距 {self.template.space}）")
         if not self.backfill_enabled:
             removed = self.store.drop_backfilled()
             if removed:
-                await log.info(f"[{self.paths.title}] 已關閉回溯：略過上次回溯加入的 {removed} 個片段")
+                await log.info(f"[{self.name}] 已關閉回溯：略過上次回溯加入的 {removed} 個片段")
 
     def _segment_candidates(self, raw_uri: str) -> list[str]:
         """片段可能的完整網址：第一個為標準 urljoin（以媒體播放清單為基準），其後為替代路徑。
@@ -230,7 +269,7 @@ class HlsProtocol(StreamProtocol):
             pl = await self._load_media()
             if pl is None:
                 errors += 1
-                await log.warning(f"[{self.paths.title}] 讀取播放清單失敗（{errors}/{opts.live_error_limit}）")
+                await log.warning(f"[{self.name}] 讀取播放清單失敗（{errors}/{opts.live_error_limit}）")
                 if errors >= opts.live_error_limit:
                     break
                 continue
@@ -239,10 +278,10 @@ class HlsProtocol(StreamProtocol):
             idle = 0 if added else idle + 1
             await self._update_progress()
             if pl.endlist:
-                await log.info(f"[{self.paths.title}] 直播已結束（ENDLIST）")
+                await log.info(f"[{self.name}] 直播已結束（ENDLIST）")
                 break
             if idle >= opts.live_idle_limit:
-                await log.info(f"[{self.paths.title}] 連續 {idle} 次沒有新片段，停止監控")
+                await log.info(f"[{self.name}] 連續 {idle} 次沒有新片段，停止監控")
                 break
 
     # ======================================================================
@@ -260,11 +299,11 @@ class HlsProtocol(StreamProtocol):
         known = [s.key for s in self.store.ordered() if not s.from_backfill]
         if not known:
             return
-        await log.info(f"[{self.paths.title}] 開始回溯較早片段（目前最早序號 {min(known)}）")
+        await log.info(f"[{self.name}] 開始回溯較早片段（目前最早序號 {min(known)}）")
         strategy = UrlDiffBackfill(distance=self.ctx.options.backfill_distance)
         nums = await strategy.discover(tpl, known, lambda n: self._probe(tpl.format(n)))
         if not nums:
-            await log.info(f"[{self.paths.title}] 沒有找到更早的片段")
+            await log.info(f"[{self.name}] 沒有找到更早的片段")
             return
 
         ref = self.store.get(min(known))
@@ -283,7 +322,7 @@ class HlsProtocol(StreamProtocol):
                           encryption=enc, init_url=ref.init_url, from_backfill=True)
             if self.store.add(seg):
                 self._schedule(seg)
-        await log.success(f"[{self.paths.title}] 回溯新增 {len(nums)} 個片段（{nums[0]} ~ {nums[-1]}）")
+        await log.success(f"[{self.name}] 回溯新增 {len(nums)} 個片段（{nums[0]} ~ {nums[-1]}）")
         await self._update_progress()
 
     # ======================================================================
@@ -300,17 +339,15 @@ class HlsProtocol(StreamProtocol):
             if seg.init_url:
                 seg.init = await self._ensure_aux(seg.init_url, "init", Path(url_basename(seg.init_url)).suffix or ".mp4")
             if seg.encryption and seg.encryption.method in ("AES-128", "SAMPLE-AES"):
-                seg.encryption.local = await self._ensure_aux(seg.encryption.uri, "key", ".key")
+                seg.encryption.local = await self._ensure_aux(seg.encryption.uri, "key", ".key", samples=[seg])
 
             if not dest.exists():
                 seg.status = SegStatus.RUNNING
-                res = await fetch_with_retry(self.ctx.fetcher, FetchRequest(
-                    url=seg.url, dest=dest, session_id=self.ctx.stream.session_id, byte_range=seg.byte_range,
-                ), retries=opts.retries)
+                res = await self._fetch(seg, dest)
                 if not res.ok:
                     seg.status = SegStatus.FAILED
                     seg.retries += 1
-                    await log.error(f"[{self.paths.title}] 片段 {seg.key} 下載失敗：{res.error or res.status}")
+                    await log.error(f"[{self.name}] 片段 {seg.key} 下載失敗：{res.error or res.status}")
                     return
                 seg.size = res.size
             seg.status = SegStatus.DONE
@@ -324,7 +361,7 @@ class HlsProtocol(StreamProtocol):
             raise
         except Exception as e:
             seg.status = SegStatus.FAILED
-            await log.error(f"[{self.paths.title}] 片段 {seg.key} 發生錯誤：{e}")
+            await log.error(f"[{self.name}] 片段 {seg.key} 發生錯誤：{e}")
         finally:
             self._since_save += 1
             if self._since_save >= SAVE_EVERY:
@@ -332,31 +369,118 @@ class HlsProtocol(StreamProtocol):
                 self.store.save()
             await self._update_progress()
 
-    @staticmethod
-    def _parse_user_key(keys: dict[str, str]) -> Optional[bytes]:
-        """--key 提供的 AES-128 金鑰（HLS 沒有 KID，取未指定 KID 的那組，否則取第一組）"""
-        if not keys:
-            return None
-        text = keys.get("") or next(iter(keys.values()))
-        try:
-            key = bytes.fromhex(text.removeprefix("0x"))
-        except ValueError:
-            raise StreamError(f"--key 不是有效的 hex：{text}") from None
-        if len(key) != 16:
-            raise StreamError(f"--key 長度錯誤：HLS AES-128 金鑰應為 16 bytes（32 個 hex 字元），收到 {len(key)} bytes")
-        return key
+    async def _fetch(self, seg: Segment, dest: Path):
+        return await fetch_with_retry(self.ctx.fetcher, FetchRequest(
+            url=seg.url, dest=dest, session_id=self.ctx.stream.session_id, byte_range=seg.byte_range,
+        ), retries=self.ctx.options.retries)
 
-    async def _ensure_aux(self, url: str, prefix: str, ext: str) -> str:
+    @staticmethod
+    def _parse_user_keys(keys: list[tuple[str, str]]) -> list[tuple[str, bytes]]:
+        """--key 提供的金鑰 [(kid, key)]；多組時由 _pick_user_key 依 KID 對應或試解選出"""
+        result = []
+        for kid, text in keys:
+            try:
+                key = bytes.fromhex(text.removeprefix("0x"))
+            except ValueError:
+                raise StreamError(f"--key 不是有效的 hex：{text}") from None
+            if len(key) != 16:
+                raise StreamError(f"--key 長度錯誤：金鑰應為 16 bytes（32 個 hex 字元），收到 {len(key)} bytes：{text}")
+            result.append((kid, key))
+        return result
+
+    async def _verify_user_keys(self) -> None:
+        """--key 有多組時，開始下載前先以每個金鑰網址的片段試解選出要用的一組"""
+        by_uri: dict[str, list[Segment]] = {}
+        # 已下載的片段優先（不必再下載），其次播放清單中的片段，回溯片段最後
+        for seg in sorted(self.store.ordered(), key=lambda s: (s.from_backfill, s.status is not SegStatus.DONE)):
+            if seg.encryption and seg.encryption.method in ("AES-128", "SAMPLE-AES"):
+                by_uri.setdefault(seg.encryption.uri, []).append(seg)
+        for uri, segs in by_uri.items():
+            local = await self._ensure_aux(uri, "key", ".key", samples=segs[:3])
+            for seg in segs:
+                seg.encryption.local = local
+
+    async def _pick_user_key(self, url: str, samples: list[Segment]) -> bytes:
+        """--key 只有一組時直接使用。多組時：
+        1. fMP4：init 的 tenc 標示 KID → 選用 KID 相同的 --key（影像、音訊常是不同 KID）
+        2. 以實際片段逐一試解（AES-128 檢查解密結果；SAMPLE-AES fMP4 交給 ffmpeg 試解碼）
+        都選不出來時用第一組，照常解密"""
+        keys = self._user_keys
+        if len(keys) == 1:
+            return keys[0][1]
+        first = keys[0][1]
+
+        sample = await self._key_sample(samples)
+        if sample is None:
+            await log.warning(f"[{self.name}] 無法下載用來判斷金鑰的片段，使用 --key 的第一組")
+            return first
+        seg, data_path = sample
+
+        init_path = self.paths.fragments / seg.init if seg.init else None
+        if init_path is not None:
+            kids = init_kids(init_path)
+            match = next((k for kid, k in keys if kid and kid in kids), None)
+            if match is not None:
+                await log.info(f"[{self.name}] 金鑰依 KID 對應：{kids[0]} → {match.hex()}")
+                return match
+
+        if seg.encryption.method == "AES-128":
+            data = data_path.read_bytes()
+            results = [check_aes128(data, k, seg.encryption.iv) for _, k in keys]
+            idx = next((i for i, r in enumerate(results) if r is True), None)
+            if idx is None:
+                idx = next((i for i, r in enumerate(results) if r is None), None)
+        elif init_path is not None:        # SAMPLE-AES fMP4（cbcs）：與合併時相同，交給 ffmpeg 解密試解碼
+            trial = data_path.with_name("keytest_" + seg.filename)
+            trial.write_bytes(init_path.read_bytes() + data_path.read_bytes())
+            try:
+                hexes = [k.hex() for _, k in keys]
+                chosen = await pick_cenc_key(trial, hexes, self.ctx.options.ffmpeg, via_ffmpeg=True)
+            finally:
+                trial.unlink(missing_ok=True)
+            idx = hexes.index(chosen) if chosen else None
+        else:
+            await log.warning(f"[{self.name}] SAMPLE-AES（TS）無法試解判斷金鑰，使用 --key 的第一組")
+            return first
+
+        if idx is None:
+            await log.warning(f"[{self.name}] 金鑰試解：{len(keys)} 組都沒有解出可辨識的內容，使用第一組（{first.hex()}）")
+            return first
+        await log.info(f"[{self.name}] 金鑰試解：第 {idx + 1} 組正確（{keys[idx][1].hex()}）")
+        return keys[idx][1]
+
+    async def _key_sample(self, samples: list[Segment]) -> Optional[tuple[Segment, Path]]:
+        """取得用來判斷金鑰的片段（含 init）；已下載的直接使用，下載的片段之後不會重複下載"""
+        for seg in samples:
+            if not seg.encryption:
+                continue
+            dest = self.paths.fragments / seg.filename
+            try:
+                if seg.init_url and not seg.init:
+                    seg.init = await self._ensure_aux(seg.init_url, "init", Path(url_basename(seg.init_url)).suffix or ".mp4")
+            except StreamError:
+                continue
+            if not dest.exists():
+                res = await self._fetch(seg, dest)
+                if not res.ok:
+                    continue
+                seg.size = res.size
+            return seg, dest
+        return None
+
+    async def _ensure_aux(self, url: str, prefix: str, ext: str, samples: Optional[list[Segment]] = None) -> str:
         """下載金鑰 / init 片段；同一網址只下載一次，以網址雜湊命名。
-        使用者以 --key 提供金鑰時不下載，直接寫入本地金鑰檔（供本地播放清單與 ffmpeg 合併使用）"""
+        使用者以 --key 提供金鑰時不下載，以 samples 片段試解選出正確的金鑰後寫入本地金鑰檔
+        （供本地播放清單與 ffmpeg 合併使用）"""
         name = f"{prefix}_{hashlib.md5(url.encode()).hexdigest()[:10]}{ext}"
         dest = self.paths.fragments / name
         lock = self._key_locks.setdefault(url, asyncio.Lock())
         async with lock:
-            if prefix == "key" and self._user_key is not None:
+            if prefix == "key" and self._user_keys:
                 if url not in self._key_bytes:
-                    dest.write_bytes(self._user_key)
-                    self._key_bytes[url] = self._user_key
+                    key = await self._pick_user_key(url, samples or [])
+                    dest.write_bytes(key)
+                    self._key_bytes[url] = key
                 return name
             if not dest.exists():
                 res = await fetch_with_retry(self.ctx.fetcher, FetchRequest(
@@ -364,7 +488,7 @@ class HlsProtocol(StreamProtocol):
                 if not res.ok:
                     raise StreamError(f"{prefix} 下載失敗：{url}（{res.error or res.status}）")
                 if prefix == "key":
-                    await log.info(f"[{self.paths.title}] 金鑰：{dest.read_bytes().hex()}")
+                    await log.info(f"[{self.name}] 金鑰：{dest.read_bytes().hex()}")
             if prefix == "key":
                 self._key_bytes[url] = dest.read_bytes()
         return name
@@ -381,7 +505,7 @@ class HlsProtocol(StreamProtocol):
         done = [s for s in self.store.ordered() if s.status is SegStatus.DONE]
         if not done:
             if self._progress:
-                await self._progress.fail(f"[{self.paths.title}] 沒有成功下載任何片段")
+                await self._progress.fail(f"[{self.name}] 沒有成功下載任何片段")
             return StreamResult(complete=False, failed=[s.url for s in failed])
 
         local = self.paths.fragments / "media.m3u8"
@@ -389,17 +513,23 @@ class HlsProtocol(StreamProtocol):
         playlist = local
         methods = {s.encryption.method for s in done if s.encryption}
         if self.ctx.options.decrypt and "SAMPLE-AES" in methods:
-            await log.warning(f"[{self.paths.title}] SAMPLE-AES 只加密部分資料，無法逐段解密；合併時由 ffmpeg 解密")
+            await log.warning(f"[{self.name}] SAMPLE-AES 只加密部分資料，無法逐段解密；合併時由 ffmpeg 解密")
         elif self.ctx.options.decrypt and methods:
             playlist = self.paths.decrypted / "media.m3u8"
             playlist.write_text(self._render(done, with_keys=False, prefix="../fragments/"), encoding="utf-8")
 
         ext = Path(done[0].filename).suffix.lstrip(".").lower()
-        output = self.paths.final("m4a" if ext in AUDIO_EXTS else "mp4")
+        output = self.paths.final("m4a" if ext in AUDIO_EXTS and self.audio is None else "mp4")
         if self._progress:
-            msg = f"[{self.paths.title}] 完成 {len(done)} 個片段" + (f"，失敗 {len(failed)} 個" if failed else "")
+            msg = f"[{self.name}] 完成 {len(done)} 個片段" + (f"，失敗 {len(failed)} 個" if failed else "")
             await (self._progress.fail(msg) if failed else self._progress.done(msg))
-        return StreamResult(complete=not failed, output=output, playlist=playlist, failed=[s.url for s in failed])
+        result = StreamResult(complete=not failed, output=output, playlist=playlist, failed=[s.url for s in failed])
+        if self.audio is not None:
+            audio = self._audio_result or StreamResult(complete=False, failed=["音訊軌未完成"])
+            result.complete = result.complete and audio.complete and audio.playlist is not None
+            result.failed += audio.failed
+            result.audio_playlist = audio.playlist
+        return result
 
     def _render(self, segs: list[Segment], with_keys: bool, prefix: str) -> str:
         """重建本地播放清單。加密時每段寫出明確 IV，避免本地 MEDIA-SEQUENCE 從 0 開始導致 IV 錯誤"""

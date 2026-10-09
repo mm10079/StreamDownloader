@@ -129,7 +129,8 @@ class Pipeline:
         ok = result.complete
         if result.playlist and result.output and self.options.merge:
             if result.complete:
-                ok = await merge_playlist(result.playlist, result.output, self.options.ffmpeg)
+                ok = await merge_playlist(result.playlist, result.output, self.options.ffmpeg,
+                                          audio=result.audio_playlist)
                 if not ok:
                     outcome.error = "合併失敗"
             else:

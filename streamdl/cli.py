@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from typing import Literal, get_args, get_origin, Optional, Union
 
+from pydantic import ValidationError
+
 from .core.options import Options
 from .core.pipeline import Pipeline
 from .utils import log
@@ -51,7 +53,12 @@ def install_stop_handler(loop: asyncio.AbstractEventLoop, stop: asyncio.Event) -
 async def amain(argv: Optional[list[str]] = None) -> int:
     Message.register_pusher(RichPusher())       # 命令列使用 Rich 進度畫面；當作套件使用時不註冊
     args = build_parser().parse_args(argv)
-    options = Options(**vars(args))
+    try:
+        options = Options(**vars(args))
+    except ValidationError as e:        # 參數內容錯誤（例如 --key 無法辨識）：只顯示原因
+        for err in e.errors():
+            print(str(err["msg"]).removeprefix("Value error, "))
+        return 2
     if not options.url:
         options.url = await log.ask("請輸入網址（直接 Enter 開啟瀏覽器，手動前往播放頁面）：")
     stop = asyncio.Event()
