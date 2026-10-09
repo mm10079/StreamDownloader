@@ -28,9 +28,11 @@ class HlsProtocol(StreamProtocol):
         self.master_url: Optional[str] = None
         self.media_url = ctx.stream.url
         self.template: Optional[UrlTemplate] = None
+        self.backfill_enabled = False
         self._rebase: Callable[[parser.HlsSegment], str] = lambda seg: seg.uri
         self._key_locks: dict[str, asyncio.Lock] = {}
         self._key_bytes: dict[str, bytes] = {}
+        self._user_key = self._parse_user_key(ctx.options.key_map)
         self._tg: Optional[asyncio.TaskGroup] = None
         self._progress: Optional[log.Progress] = None
         self._since_save = 0
@@ -53,7 +55,7 @@ class HlsProtocol(StreamProtocol):
                 self._tg = tg
                 for seg in self.store.pending():
                     self._schedule(seg)
-                if self.template is not None and self.store.data.key_mode == "template":
+                if self.backfill_enabled and self.template is not None and self.store.data.key_mode == "template":
                     tg.create_task(self._guard(self._backfill(), "回溯"))
                 if playlist.is_live:
                     tg.create_task(self._guard(self._monitor(playlist), "直播監控"))
@@ -87,8 +89,9 @@ class HlsProtocol(StreamProtocol):
         if playlist is None or not playlist.segments:
             raise StreamError(f"媒體播放清單沒有片段: {self.media_url}")
         drm = next((s.key for s in playlist.segments if s.key and s.key.drm), None)
-        if drm is not None:
-            raise StreamError(f"此串流受 DRM 保護（{drm.drm_name}），金鑰只提供給授權的解密模組，無法下載解密")
+        if drm is not None and self._user_key is None:
+            raise StreamError(f"此串流受 DRM 保護（{drm.drm_name}），金鑰只提供給授權的解密模組，無法下載解密。"
+                              f"若你合法持有金鑰，可用 --key KEY 提供")
         await log.info(f"[{self.paths.title}] 媒體播放清單：{self.media_url}"
                        f"（{'直播' if playlist.is_live else 'VOD'}，{len(playlist.segments)} 個片段）")
         return playlist
@@ -139,9 +142,12 @@ class HlsProtocol(StreamProtocol):
                     break
 
         # 2. 決定排序鍵：能推出網址模板就用網址數字（可與回溯片段共用），否則用媒體序號
-        stream_allows = self.ctx.stream.backfill and self.ctx.options.backfill
+        self.backfill_enabled = self.ctx.stream.backfill and self.ctx.options.backfill
+        # 續傳上次以網址數字為鍵的進度時，即使這次關閉回溯也要建立模板（只用於排序鍵，不探測），
+        # 否則新片段改用媒體序號為鍵，同一片段會被存成兩份
+        resume_template = self.store.data.key_mode == "template" and len(self.store) > 0
         urls = [self._rebase(s) for s in pl.segments[:5]]
-        tpl = UrlDiffBackfill().build(urls) if stream_allows and len(urls) >= 2 else None
+        tpl = UrlDiffBackfill().build(urls) if (self.backfill_enabled or resume_template) and len(urls) >= 2 else None
         if tpl and all(tpl.extract(self._rebase(s)) is not None for s in pl.segments):
             self.template = tpl
         mode = "template" if self.template else "sequence"
@@ -155,6 +161,10 @@ class HlsProtocol(StreamProtocol):
         self.store.data.header_lines = pl.header_lines
         if self.template:
             await log.debug(f"[{self.paths.title}] 網址模板：{self.template.pattern}（間距 {self.template.space}）")
+        if not self.backfill_enabled:
+            removed = self.store.drop_backfilled()
+            if removed:
+                await log.info(f"[{self.paths.title}] 已關閉回溯：略過上次回溯加入的 {removed} 個片段")
 
     def _segment_candidates(self, raw_uri: str) -> list[str]:
         """片段可能的完整網址：第一個為標準 urljoin（以媒體播放清單為基準），其後為替代路徑。
@@ -322,12 +332,32 @@ class HlsProtocol(StreamProtocol):
                 self.store.save()
             await self._update_progress()
 
+    @staticmethod
+    def _parse_user_key(keys: dict[str, str]) -> Optional[bytes]:
+        """--key 提供的 AES-128 金鑰（HLS 沒有 KID，取未指定 KID 的那組，否則取第一組）"""
+        if not keys:
+            return None
+        text = keys.get("") or next(iter(keys.values()))
+        try:
+            key = bytes.fromhex(text.removeprefix("0x"))
+        except ValueError:
+            raise StreamError(f"--key 不是有效的 hex：{text}") from None
+        if len(key) != 16:
+            raise StreamError(f"--key 長度錯誤：HLS AES-128 金鑰應為 16 bytes（32 個 hex 字元），收到 {len(key)} bytes")
+        return key
+
     async def _ensure_aux(self, url: str, prefix: str, ext: str) -> str:
-        """下載金鑰 / init 片段；同一網址只下載一次，以網址雜湊命名"""
+        """下載金鑰 / init 片段；同一網址只下載一次，以網址雜湊命名。
+        使用者以 --key 提供金鑰時不下載，直接寫入本地金鑰檔（供本地播放清單與 ffmpeg 合併使用）"""
         name = f"{prefix}_{hashlib.md5(url.encode()).hexdigest()[:10]}{ext}"
         dest = self.paths.fragments / name
         lock = self._key_locks.setdefault(url, asyncio.Lock())
         async with lock:
+            if prefix == "key" and self._user_key is not None:
+                if url not in self._key_bytes:
+                    dest.write_bytes(self._user_key)
+                    self._key_bytes[url] = self._user_key
+                return name
             if not dest.exists():
                 res = await fetch_with_retry(self.ctx.fetcher, FetchRequest(
                     url=url, dest=dest, session_id=self.ctx.stream.session_id), retries=self.ctx.options.retries)

@@ -201,6 +201,8 @@ class DashProtocol(StreamProtocol):
             async with asyncio.TaskGroup() as tg:
                 self._tg = tg
                 for track in self.tracks:
+                    if not allow_backfill and (removed := track.store.drop_backfilled()):
+                        await log.info(f"[{track.title}] 已關閉回溯：略過上次回溯加入的 {removed} 個片段")
                     for seg in track.store.pending():       # 先排上次未完成的（續傳）
                         self.schedule(track, seg)
                     track.ingest(manifest.find(track.rep_id, track.kind))   # 新片段在 ingest 內排程

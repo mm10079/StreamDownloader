@@ -94,6 +94,13 @@ class SegmentStore:
         for key in sorted(self.data.segments):
             yield self.data.segments[key]
 
+    def drop_backfilled(self) -> int:
+        """移除回溯加入的片段（關閉回溯時續傳用）；已下載的檔案保留在磁碟上，回傳移除數量"""
+        keys = [k for k, s in self.data.segments.items() if s.from_backfill]
+        for k in keys:
+            del self.data.segments[k]
+        return len(keys)
+
     def pending(self) -> list[Segment]:
         return [s for s in self.ordered() if s.status in (SegStatus.PENDING, SegStatus.FAILED)]
 
