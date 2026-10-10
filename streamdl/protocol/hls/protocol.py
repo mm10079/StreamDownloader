@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+from datetime import datetime
 import math
 from pathlib import Path
 from typing import Callable, Optional
@@ -529,7 +530,50 @@ class HlsProtocol(StreamProtocol):
             result.complete = result.complete and audio.complete and audio.playlist is not None
             result.failed += audio.failed
             result.audio_playlist = audio.playlist
+            if audio.playlist is not None:
+                result.audio_offset = await self._audio_offset(done, [s for s in self.audio.store.ordered()
+                                                                     if s.status is SegStatus.DONE])
         return result
+
+    def _seg_duration(self, seg: Segment) -> float:
+        return seg.duration or self.store.data.target_duration
+
+    async def _audio_offset(self, video: list[Segment], audio: list[Segment]) -> float:
+        """影像與音訊的起點差（秒，音訊較晚為正）。兩軌起點可能不同：直播中途開始下載時播放清單的起點、回溯找到的範圍
+        1. 兩軌都有 EXT-X-PROGRAM-DATE-TIME：以時間推算各自第一個片段的開始時間
+        2. 否則以兩軌共有的媒體序號為基準，比較該片段在各軌中的位置（不捨棄任何片段）"""
+        def start_by_pdt(segs: list[Segment]) -> Optional[float]:
+            elapsed = 0.0
+            for s in segs:
+                if s.program_date_time:
+                    try:
+                        return datetime.fromisoformat(s.program_date_time).timestamp() - elapsed
+                    except ValueError:
+                        return None
+                elapsed += self._seg_duration(s)
+            return None
+
+        def positions(segs: list[Segment]) -> dict[int, float]:
+            pos, t = {}, 0.0
+            for s in segs:
+                if s.media_sequence is not None:
+                    pos.setdefault(s.media_sequence, t)
+                t += self._seg_duration(s)
+            return pos
+
+        v_start, a_start = start_by_pdt(video), start_by_pdt(audio)
+        if v_start is not None and a_start is not None:
+            offset, how = a_start - v_start, "PROGRAM-DATE-TIME"
+        else:
+            v_pos, a_pos = positions(video), positions(audio)
+            common = next((seq for seq in a_pos if seq in v_pos), None)
+            if common is None:
+                await log.warning(f"[{self.name}] 影音無法對齊：沒有時間標記，也沒有共同的片段序號；以兩軌起點直接合併")
+                return 0.0
+            offset, how = v_pos[common] - a_pos[common], f"共同片段序號 {common}"
+        if abs(offset) >= 0.0005:
+            await log.info(f"[{self.name}] 影音對齊：音訊比影像{'晚' if offset > 0 else '早'} {abs(offset):.3f} 秒開始（依 {how}）")
+        return offset
 
     def _render(self, segs: list[Segment], with_keys: bool, prefix: str) -> str:
         """重建本地播放清單。加密時每段寫出明確 IV，避免本地 MEDIA-SEQUENCE 從 0 開始導致 IV 錯誤"""
@@ -549,6 +593,8 @@ class HlsProtocol(StreamProtocol):
                     lines.append(f'#EXT-X-KEY:METHOD={key[0]},URI="{key[1]}",IV=0x{key[2]}' if key
                                  else "#EXT-X-KEY:METHOD=NONE")
                     last_key = key
+            if s.program_date_time:
+                lines.append(f"#EXT-X-PROGRAM-DATE-TIME:{s.program_date_time}")
             lines.append(f"#EXTINF:{s.duration or self.store.data.target_duration:.3f},")
             # 解密版清單中，未加密片段仍放在 fragments 資料夾
             lines.append(s.filename if with_keys or s.encryption else prefix + s.filename)

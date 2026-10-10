@@ -1,6 +1,6 @@
 # StreamDownloader
 
-串流下載器：支援 **HLS（m3u8）** 與 **DASH（mpd）**，可下載直播與存檔，並能**回溯**播放清單以外、伺服器上仍存在的較早片段。內建 ZAN-LIVE 網站支援，其他網站可用瀏覽器監控自動找出串流。
+串流下載器：支援 **HLS（m3u8）** 與 **DASH（mpd）**，可下載直播與存檔，並能**回溯**播放清單以外、伺服器上仍存在的較早片段。支援的網站可自動登入並找出串流，其他網站可用瀏覽器監控自動找出串流。
 
 ## 功能
 
@@ -13,9 +13,6 @@
 | CENC 解密 | DASH 加密內容可用 `--key` 提供金鑰，或自動向 ClearKey 授權伺服器取得（詳見「加密內容與 DRM」） |
 | 斷點續傳 | 每條串流的片段狀態存在 `store.json`，重新執行相同指令即可接續 |
 | 瀏覽器監控 | 沒有網址或網站不支援時，開啟瀏覽器偵測頁面中的 m3u8 / mpd，逐一詢問是否下載 |
-| ZAN-LIVE | 自動登入、多視角、等待開播、附件（留言、禮物、票券、參演者、圖片） |
-| SINGULAR LIVE | 已購票券過濾、直播 / 存檔、日本 IP 限定提示、附件（活動資料、播放器參數、封面、章節截圖） |
-| Twitter（X）Space | 直接下載 Space 的 m3u8，輸出 m4a，資料夾以播出日期命名 |
 | 下載工具 | httpx（預設）、curl、瀏覽器內下載、aria2 |
 | 合併 | ffmpeg 合併為 mp4 / m4a（不重新編碼） |
 
@@ -25,7 +22,7 @@
 
 從 [Releases](../../releases) 下載 `StreamDownloader.exe`。已內嵌 Python 與 ffmpeg，不需另外安裝。
 
-- 需要瀏覽器的功能（ZAN-LIVE、瀏覽器監控）需安裝 Google Chrome
+- 需要瀏覽器的功能（網站自動登入、瀏覽器監控）需安裝 Google Chrome
 - 執行檔未簽章，第一次執行時 SmartScreen 可能警告，點「其他資訊」→「仍要執行」
 
 ### 方式二：pip 安裝（命令列與 Python 套件）
@@ -33,14 +30,14 @@
 需要 Python 3.11 以上與 ffmpeg（加入 PATH，或以 `--ffmpeg` 指定）。
 
 ```bash
-# 基本：直接下載串流網址（HLS / DASH / 一般檔案）、Twitter Space
+# 基本：直接下載串流網址（HLS / DASH / 一般檔案）
 pip install "streamdl @ git+https://github.com/mm10079/StreamDownloader"
 
-# 加上瀏覽器功能：ZAN-LIVE、SINGULAR LIVE、瀏覽器監控、--fetcher browser
+# 加上瀏覽器功能：網站自動登入、瀏覽器監控、--fetcher browser
 pip install "streamdl[browser] @ git+https://github.com/mm10079/StreamDownloader"
 ```
 
-repo 為私有時需先設定 GitHub 存取權（權杖或 SSH）。安裝後可使用 `streamdl` 指令，或 `python -m streamdl`。
+安裝後可使用 `streamdl` 指令，或 `python -m streamdl`。
 
 開發時從原始碼執行：
 
@@ -68,8 +65,6 @@ StreamDownloader.exe "https://example.com/index.m3u8" --referer "https://example
 # 一般網頁：開啟瀏覽器監控串流
 StreamDownloader.exe "https://example.com/watch/123"
 
-# ZAN-LIVE（detail 頁或直播間網址）
-StreamDownloader.exe "https://www.zan-live.com/zh-TW/live/detail/10782"
 ```
 
 pip 安裝後把 `StreamDownloader.exe` 換成 `streamdl`；從原始碼執行則換成 `python -m streamdl`。
@@ -80,10 +75,11 @@ pip 安裝後把 `StreamDownloader.exe` 換成 `streamdl`；從原始碼執行�
 
 - 會一併讀取本地金鑰檔（`.key`）解密播放；一般播放器會擋下非影音副檔名的金鑰檔，也多半不支援 SAMPLE-AES
 - 拖入分軌下載的 `video/fragments/media.m3u8` 時，會自動產生 `play.m3u8` 把 `audio/` 音軌一起播放
+- 本地 `media.m3u8` 保留原始的 `#EXT-X-PROGRAM-DATE-TIME`；片段檔名為原始的媒體序號（補零），可據此手動對齊兩軌
 
 ### 停止與續傳
 
-- 全部任務結束後，若還有開啟的瀏覽器（ZAN-LIVE、SINGULAR LIVE、瀏覽器監控），會保持開啟並等待按 Enter 才關閉，方便繼續觀看直播到結束；`--no-keep-browser` 則直接關閉。
+- 全部任務結束後，若還有開啟的瀏覽器（網站登入、瀏覽器監控），會保持開啟並等待按 Enter 才關閉，方便繼續觀看直播到結束；`--no-keep-browser` 則直接關閉。
 
 - 第一次 **Ctrl+C**：停止追蹤直播的新片段，等待進行中的下載完成後照常合併
 - 第二次 **Ctrl+C**：立即中斷
@@ -149,67 +145,9 @@ streamdl.download(url, progress_hook=hook)
 
 提取器依下列順序比對網址：
 
-1. **網站專用**：ZAN-LIVE、SINGULAR LIVE、Twitter Space
+1. **網站專用**：支援的網站會自動登入（見參數 `--account` / `--password`）並取得串流與附件
 2. **直接串流網址**：網址為 `.m3u8`、`.mpd` 或一般媒體檔（mp4 / mp3 等）
 3. **瀏覽器監控**：以上都不符合，或沒有輸入網址
-
-### ZAN-LIVE
-
-- 帳密：執行時於終端機輸入（密碼不顯示），或設定環境變數，避免密碼出現在指令與 `.cmd` 檔中：
-
-  ```powershell
-  # PowerShell
-  $env:STREAMDL_ACCOUNT="信箱"
-  $env:STREAMDL_PASSWORD="密碼"
-  ```
-
-  ```bat
-  :: 命令提示字元 / .cmd
-  set STREAMDL_ACCOUNT=信箱
-  set STREAMDL_PASSWORD=密碼
-  ```
-
-  帳號直接按 Enter 則改為在瀏覽器視窗中手動登入（多視角需每個視窗各登入一次）。
-- **輸入 detail 頁**：有直播中的票就下載全部視角；否則選擇最早開演的一組，並等待開播。
-- **輸入直播間網址**：只下載該視角。
-- 每個視角都會**各自登入、開一個專屬瀏覽器進入直播間**，再以該瀏覽器的 session 下載；下載期間請勿關閉這些瀏覽器，也不要在其他地方開啟同一個直播間。
-- 附件存放在 `輸出資料夾/公演標題/視角名稱/`：`images/`（logos、artists、gifts）、`raw comments/`（留言）、`web info/tickets/`（票券、參演者、Banner）、`web info/attachments/`（禮物 JSON）。
-
-### SINGULAR LIVE
-
-```bash
-StreamDownloader.exe "https://singular-live.thinkr.jp/zh/event/detail/活動ID"
-```
-
-- 支援活動資訊頁與直播間網址（`/play/票券ID/內容ID`）。
-- 會開啟瀏覽器並自動登入：帳密來自環境變數 `STREAMDL_ACCOUNT` / `STREAMDL_PASSWORD`、`--account` / `--password`，或執行時於終端機輸入；帳號直接 Enter、或自動登入失敗時，改為在瀏覽器中手動登入，登入後自動繼續。
-- 登入頁有 Cloudflare Turnstile 人機驗證，按鈕要等驗證通過才能點擊：程式會等待驗證自然完成後再登入；若瀏覽器中出現勾選框，請手動完成。程式不會繞過人機驗證。
-- 只下載**已購買**的票券（以「已購買票券」API 確認）；未購買、尚未建立直播間（`tickets` 為空）、直播結束但存檔尚未提供時會說明原因。
-- 直播已結束且有存檔時，自動改下載存檔。尚未開播時等待開放（`--no-wait` 不等待）。
-- **僅限日本 IP**：進入直播間時若被導回資訊頁（「本活動僅限日本國內播放」），請開啟日本 VPN，並在瀏覽器中**手動進入直播間**，程式偵測到後自動繼續。
-- **VPN 注意**：瀏覽器擴充功能型 VPN 只影響瀏覽器，下載器本身的連線不會經過它。影片若也限制日本 IP，請改用系統層級的 VPN、以 `--proxy` 指定日本代理，或加上 `-f browser` 讓下載經由瀏覽器進行（較慢）。
-- 附件與 ZAN-LIVE 相同布局，存放在 `輸出資料夾/活動標題/內容名稱/`：
-
-  ```
-  內容名稱/
-  ├── images/                 cover、poster（暫停畫面）、seekpreview_*（縮圖預覽）
-  │   └── slides/             章節截圖
-  └── web info/
-      ├── tickets/            uliza_params.json（播放器參數）
-      └── attachments/        event.json（活動資料 data-event）
-  ```
-- 下載期間請保持瀏覽器開啟。
-
-### Twitter（X）Space
-
-```bash
-StreamDownloader.exe "https://prod-fastly-….video.pscp.tv/…/audio-space/master_playlist.m3u8" -t 標題
-```
-
-- 輸入 Space 的 m3u8 網址（pscp.tv）；目前不支援直接輸入 x.com 的 Space 頁面（可用瀏覽器監控取得 m3u8）。
-- 未指定 `-t` 時會詢問標題，直接 Enter 使用「Twitter Space」。
-- 輸出：`輸出資料夾/{播出日期} - Twitter Space #{標題}/{標題}.m4a`，播出日期取自播放清單的開始時間。
-- 自動帶上 `Referer: https://x.com/`；可用 `--referer` 覆寫。
 
 ### 固定瀏覽器設定檔（`--chrome-profile`）
 
@@ -221,7 +159,7 @@ StreamDownloader.exe "網址" --chrome-profile "%LOCALAPPDATA%\StreamDownloader\
 
 1. 第一次使用時，在開啟的瀏覽器中到 Chrome 線上應用程式商店安裝需要的擴充功能並完成設定。
 2. 之後每次執行都會沿用。
-3. 同一個設定檔同時只能由一個瀏覽器使用：執行前請關閉以該設定檔開啟的 Chrome；ZAN-LIVE 多視角時只有第一個瀏覽器使用固定設定檔。
+3. 同一個設定檔同時只能由一個瀏覽器使用：執行前請關閉以該設定檔開啟的 Chrome；同時開啟多個瀏覽器時，只有第一個使用固定設定檔。
 
 > 選擇 VPN 擴充功能時請留意隱私：部分免費 VPN 擴充功能（例如 Urban VPN Proxy）曾被揭露會蒐集並轉售使用者的瀏覽資料，而此瀏覽器會登入你的購票帳號。
 
@@ -229,7 +167,7 @@ StreamDownloader.exe "網址" --chrome-profile "%LOCALAPPDATA%\StreamDownloader\
 
 1. 開啟瀏覽器後自行登入、前往播放頁面並開始播放。
 2. 偵測到 m3u8 / mpd 時會在終端機詢問「下載這個串流？」。
-3. 若前往的是支援的網站（如 ZAN-LIVE 頁面），會自動交給該網站的流程處理。
+3. 若前往的是支援的網站，會自動交給該網站的流程處理（含自動登入）。
 4. 下載期間請保持瀏覽器開啟（cookies 由瀏覽器持續同步）。
 
 ## 回溯（自動探測較早片段）
@@ -245,7 +183,7 @@ StreamDownloader.exe "網址" --chrome-profile "%LOCALAPPDATA%\StreamDownloader\
 
 - 預設開啟；`--no-backfill` 關閉。
 - 片段網址中帶有每段不同的簽章時無法推出模板，會自動略過。
-- ZAN-LIVE 預設關閉回溯。
+- 部分網站預設關閉回溯。
 
 ## 加密內容與 DRM
 
@@ -319,7 +257,7 @@ backup/標題/
 | `--ffmpeg` | ffmpeg | ffmpeg 路徑（exe 版已內嵌） |
 | `--live-idle-limit` | 10 | 直播連續幾次沒有新片段就視為結束 |
 | `--live-error-limit` | 10 | 連續幾次讀取播放清單失敗就視為結束 |
-| `--account` / `--password` | 環境變數 | 網站登入帳密（建議改用環境變數或執行時輸入） |
+| `--account` / `--password` | 環境變數 | 支援的網站自動登入用的帳密，見下方說明 |
 | `--media` / `--no-media` | 開 | 下載影音串流 |
 | `--attachment` / `--no-attachment` | 開 | 下載附件 |
 | `--skip` | | 略過的網址或 ID，以逗號分隔 |
@@ -331,12 +269,26 @@ backup/標題/
 | `--keep-browser` / `--no-keep-browser` | 開 | 全部任務結束後保持瀏覽器開啟，按 Enter 才關閉 |
 | `--aria2-rpc` / `--aria2-secret` | | aria2 RPC 位址與密鑰（需先啟動 `aria2c --enable-rpc`） |
 
+**網站登入（`--account` / `--password`）**：輸入支援的網站網址時會自動登入。帳密依序取自參數、環境變數 `STREAMDL_ACCOUNT` / `STREAMDL_PASSWORD`，都沒有時於終端機詢問；帳號直接按 Enter，或自動登入失敗時，改為在開啟的瀏覽器中手動登入，登入後自動繼續。建議用環境變數，避免密碼出現在指令與 `.cmd` 檔中：
+
+```powershell
+# PowerShell
+$env:STREAMDL_ACCOUNT="信箱"
+$env:STREAMDL_PASSWORD="密碼"
+```
+
+```bat
+:: 命令提示字元 / .cmd
+set STREAMDL_ACCOUNT=信箱
+set STREAMDL_PASSWORD=密碼
+```
+
 ## 限制
 
 - Widevine / PlayReady / FairPlay 等 DRM 不支援（見「加密內容與 DRM」）。
 - CENC 解密不支援以 `saio` 指向 mdat 的輔助資訊格式，以及 `tfhd` 帶絕對 `base_data_offset` 的檔案（可安裝 `mp4decrypt` 處理）。
 - HLS 獨立音軌只下載一條（優先 `DEFAULT=YES`，其次 `AUTOSELECT=YES`），目前無法指定語言。
-- 影像與音訊分軌下載（HLS 獨立音軌、DASH）時，若兩軌的起點不同（例如回溯找到的範圍不同、直播中途開始下載），合併後可能影音不同步。
+- DASH 影像與音訊兩軌的起點不同時（例如回溯找到的範圍不同），合併後可能影音不同步。HLS 獨立音軌會依 `EXT-X-PROGRAM-DATE-TIME` 或共同的片段序號自動對齊。
 - DASH 多 Period（例如插入廣告）只下載第一個 Period（直播為目前的 Period）。
 - 字幕軌目前略過。
 - aria2 下載方式已實作但尚未實測。

@@ -5,6 +5,7 @@ import json
 import shutil
 import subprocess
 import threading
+from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -189,3 +190,82 @@ def test_sample_aes_tracks_with_different_kids(drm_server, tmp_path, key):
         res = subprocess.run([ffmpeg, "-v", "error", "-i", str(final), "-map", f"0:{stream}", "-f", "null", "-"],
                              capture_output=True, text=True)
         assert res.returncode == 0 and not res.stderr.strip(), (stream, res.stderr[:300])
+
+
+# ---------------- 兩軌起點不同：依 PROGRAM-DATE-TIME 或共同序號對齊 ----------------
+
+def _hls_lines(path):
+    """ffmpeg 產生的 VOD 清單 → [(EXTINF 秒數, 片段檔名)]"""
+    lines = path.read_text().splitlines()
+    return [(float(l.split(":")[1].rstrip(",")), lines[i + 1]) for i, l in enumerate(lines) if l.startswith("#EXTINF")]
+
+
+@pytest.fixture
+def offset_server(tmp_path, request):
+    """同一個來源切成影像、音訊兩條 HLS（時間軸相同），其中一軌少了開頭 2 段"""
+    late, with_pdt = request.param
+    root = tmp_path / "srv"
+    root.mkdir()
+    common = ["-y", "-hide_banner", "-loglevel", "error"]
+    src = tmp_path / "src.ts"
+    subprocess.run([ffmpeg, *common, "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=12",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=12",
+                    "-c:v", "libx264", "-g", "10", "-c:a", "aac", "-f", "mpegts", str(src)], check=True)
+    hls = ["-f", "hls", "-hls_time", "2", "-hls_list_size", "0", "-hls_playlist_type", "vod"]
+    for name, stream in (("video", "0:v"), ("audio", "0:a")):
+        subprocess.run([ffmpeg, *common, "-copyts", "-i", str(src), "-map", stream, "-c", "copy", *hls,
+                        "-hls_segment_filename", str(root / f"{name}_%02d.ts"), str(tmp_path / f"{name}.m3u8")], check=True)
+    expected = 0.0
+    for name in ("video", "audio"):
+        entries = _hls_lines(tmp_path / f"{name}.m3u8")
+        skip = 2 if name == late else 0
+        if skip:
+            expected = sum(d for d, _ in entries[:skip]) * (1 if name == "audio" else -1)
+        t = 1_791_581_992.0 + sum(d for d, _ in entries[:skip])      # 兩軌共用的時鐘
+        lines = ["#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:3", f"#EXT-X-MEDIA-SEQUENCE:{skip}"]
+        for d, f in entries[skip:]:
+            if with_pdt:
+                stamp = datetime.fromtimestamp(t, timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+                lines.append(f"#EXT-X-PROGRAM-DATE-TIME:{stamp}")
+            lines += [f"#EXTINF:{d:.6f},", f]
+            t += d
+        (root / f"{name}.m3u8").write_text("\n".join(lines + ["#EXT-X-ENDLIST"]) + "\n")
+    (root / "playlist.m3u8").write_text(DRM_MASTER)
+
+    class Quiet(SimpleHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Quiet, directory=str(root)))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{httpd.server_address[1]}", expected, with_pdt
+    httpd.shutdown()
+
+
+@pytest.mark.skipif(not (ffmpeg and ffprobe), reason="需要 ffmpeg / ffprobe")
+@pytest.mark.parametrize("offset_server", [("audio", True), ("audio", False), ("video", True)],
+                         ids=["audio-late-pdt", "audio-late-sequence", "video-late-pdt"], indirect=True)
+def test_tracks_with_different_start_are_aligned(offset_server, tmp_path):
+    url, expected, with_pdt = offset_server
+    out = tmp_path / "out"
+
+    async def main():
+        pipe = Pipeline(Options(output=out, merge=True, backfill=False, retries=1))
+        session = pipe.sessions.create()
+        job = MediaJob(streams=[StreamSpec(kind=StreamKind.HLS, url=f"{url}/playlist.m3u8",
+                                           title="sync", session_id=session.id)])
+        try:
+            return await pipe.execute(job)
+        finally:
+            await pipe.fetcher.aclose()
+            await pipe.sessions.aclose()
+
+    assert asyncio.run(main()).ok
+    probe = json.loads(subprocess.run(
+        [ffprobe, "-v", "error", "-show_entries", "stream=codec_type,start_time", "-of", "json", str(out / "sync.mp4")],
+        capture_output=True, check=True).stdout)
+    start = {s["codec_type"]: float(s["start_time"]) for s in probe["streams"]}
+    assert abs(expected) > 3                                         # 確實有起點差
+    assert abs((start["audio"] - start["video"]) - expected) < 0.3, (start, expected)
+    local = (out / "backup" / "sync" / "video" / "fragments" / "media.m3u8").read_text()
+    assert ("#EXT-X-PROGRAM-DATE-TIME:" in local) == with_pdt                    # 本地清單保留時間標記

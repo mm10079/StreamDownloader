@@ -86,8 +86,9 @@ def _error_lines(text: str) -> str:
 
 
 async def merge_playlist(playlist: Path, output: Path, ffmpeg: str = "ffmpeg",
-                         audio: Optional[Path] = None) -> bool:
-    """以本地 m3u8 合併片段（含解密）為單一檔案；audio 為獨立音訊軌的本地 m3u8 時，取 playlist 的影像與 audio 的音訊"""
+                         audio: Optional[Path] = None, audio_offset: float = 0.0) -> bool:
+    """以本地 m3u8 合併片段（含解密）為單一檔案；audio 為獨立音訊軌的本地 m3u8 時，取 playlist 的影像與 audio 的音訊。
+    audio_offset：音訊比影像晚開始的秒數（負數為較早）；ffmpeg 預設會把各輸入的起點都歸零，因此以 -itsoffset 延後較晚開始的一軌"""
     exe = find_ffmpeg(ffmpeg)
     if exe is None:
         await log.error("找不到 ffmpeg，請以 --ffmpeg 指定路徑；片段已保留在 backup 資料夾")
@@ -98,10 +99,14 @@ async def merge_playlist(playlist: Path, output: Path, ffmpeg: str = "ffmpeg",
     output.parent.mkdir(parents=True, exist_ok=True)
     tmp = output.with_name(output.stem + ".merging" + output.suffix)
     input_opts = ["-allowed_extensions", "ALL", "-protocol_whitelist", "file,crypto"]
-    args = [*input_opts, "-i", playlist.name]
-    if audio is not None:
+    if audio is None:
+        args = [*input_opts, "-i", playlist.name]
+    else:
         rel = os.path.relpath(audio, playlist.parent).replace("\\", "/")
-        args += [*input_opts, "-i", rel, "-map", "0:v?", "-map", "1:a"]
+        delay_video = ["-itsoffset", f"{-audio_offset:.3f}"] if audio_offset < -0.0005 else []
+        delay_audio = ["-itsoffset", f"{audio_offset:.3f}"] if audio_offset > 0.0005 else []
+        args = [*input_opts, *delay_video, "-i", playlist.name,
+                *input_opts, *delay_audio, "-i", rel, "-map", "0:v?", "-map", "1:a"]
     code, err = await run_ffmpeg(exe, [*args, "-c", "copy", str(tmp.resolve())],
                                  label=f"合併 {output.name}", cwd=playlist.parent, done=f"合併完成：{output}")
     if code != 0:
