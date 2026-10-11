@@ -30,13 +30,12 @@ class Options(BaseModel):
     per_host: int = Field(default=6, description="單一主機同時下載數")
     retries: int = Field(default=5, description="每個片段的重試次數")
     quality: int = Field(default=0, description="畫質序號，0 為最高，數字越大畫質越低（HLS / DASH 影像軌）")
-    backfill: bool = Field(default=True, description="嘗試回溯播放清單以外的較早片段")
+    backfill: bool = Field(default=False, description="嘗試回溯播放清單以外的較早片段")
     backfill_distance: int = Field(default=10000, description="連續序號時往回搜尋的最大距離")
     decrypt: bool = Field(default=False, description="下載中同步解密片段")
     key: str = Field(default="", description="解密金鑰（hex）：KID:KEY，不知道 KID 時可只填 KEY；多組以逗號分隔。"
                                               "也可填金鑰檔路徑（每行一組，可混用 hex / UUID / base64 / ClearKey JSON / 16 bytes 二進位）。"
-                                              "不確定哪一組正確時可全部列出，會依 KID 對應或以實際片段試解自動選出。"
-                                              "僅適用於你合法持有金鑰的內容")
+                                              "不確定哪一組正確時可全部列出，會依 KID 對應或以實際片段試解自動選出")
     merge: bool = Field(default=True, description="完成後以 ffmpeg 合併")
     ffmpeg: str = Field(default="ffmpeg", description="ffmpeg 路徑（exe 版已內嵌）")
 

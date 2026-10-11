@@ -190,7 +190,7 @@ def read_track(tmp_path, kind):
 def test_live_mpd_updates_until_static_with_backfill(dash_server, tmp_path):
     # 直播視窗 3~4 → 3~5 → 轉為 static 3~6；回溯應補回 1~2
     DashMock.manifests = [timeline_mpd(3, 4, True), timeline_mpd(3, 5, True), timeline_mpd(3, 6, False)]
-    assert run_job(f"{dash_server}/live.mpd", tmp_path) is True
+    assert run_job(f"{dash_server}/live.mpd", tmp_path, backfill=True) is True
     assert DashMock.served >= 3
     assert read_track(tmp_path, "video") == "INIT:/video-init.mp4|" + "".join(f"video{n}|" for n in range(1, 7))
     assert read_track(tmp_path, "audio").endswith("audio5|audio6|")

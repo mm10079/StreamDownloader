@@ -3,7 +3,7 @@
     import streamdl
     result = streamdl.download("https://example.com/master.m3u8", output="downloads")
 """
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 from .api import adownload, download
 from .core.options import Options

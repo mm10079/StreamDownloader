@@ -87,7 +87,7 @@ def test_hls_backfill_decrypt_and_refresh(server, tmp_path, fetcher):
 
     async def main():
         nonlocal refreshes
-        opts = Options(output=tmp_path, fetcher=fetcher, merge=False, decrypt=True, concurrency=4, retries=3, live_idle_limit=1)
+        opts = Options(output=tmp_path, fetcher=fetcher, merge=False, decrypt=True, backfill=True, concurrency=4, retries=3, live_idle_limit=1)
         pipe = Pipeline(opts)
         session = pipe.sessions.create(headers={"User-Agent": "test"})
         session.set_cookies([ct.make_cookie("token", "bad", domain="127.0.0.1")])

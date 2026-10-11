@@ -12,7 +12,7 @@
     # 已在事件迴圈中（例如 FastAPI、discord.py）
     result = await streamdl.adownload(url, output="downloads")
 
-所有選項與 CLI 參數相同（底線取代連字號），例如 quality=1、backfill=False、key="KID:KEY"。
+所有選項與 CLI 參數相同（底線取代連字號），例如 quality=1、backfill=True、key="KID:KEY"。
 
 當作套件使用時：
 - 不會印出 Rich 畫面：訊息寫入 logging（logger 名稱 "streamdl"），可另外傳入 progress_hook
