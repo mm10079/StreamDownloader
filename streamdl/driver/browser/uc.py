@@ -35,6 +35,7 @@ class UC(BaseBrowser):
         self.driver: Optional[Chrome] = None
         self.options: Optional[ChromeOptions] = None
         self.user_data_dir: Optional[str] = None    # 固定設定檔（保留登入與擴充功能）；None 為暫存設定檔
+        self._watcher = None                        # CdpMediaWatcher
         self._network_log: list = []  # 用於儲存 CDP 攔截到的網路請求
 
     def start(self, headless: bool = False):
@@ -68,9 +69,22 @@ class UC(BaseBrowser):
         self.driver.set_script_timeout(60)
         
         self._network_log.clear()
+        self._start_watcher()
+
+    def _start_watcher(self) -> None:
+        """CDP 監聽跨網站 iframe 與 Worker 的請求（performance log 看不到）；失敗時退回只用 performance log"""
+        try:
+            from .cdp_watch import CdpMediaWatcher
+            self._watcher = CdpMediaWatcher(self.driver.options.debugger_address, is_media_url)
+            self._watcher.start()
+        except Exception:
+            self._watcher = None
 
     def close(self):
         """關閉瀏覽器獨立實例，釋放記憶體"""
+        if self._watcher is not None:
+            self._watcher.stop()
+            self._watcher = None
         if self.driver is not None:
             self.driver.quit()
             self.driver = None
@@ -139,7 +153,10 @@ class UC(BaseBrowser):
         if self.driver is None:
             raise RuntimeError("瀏覽器尚未啟動，請先呼叫 start() 方法")
         found = []
-        for entry in self.driver.get_log("performance"):
+        watching = self._watcher is not None and self._watcher.alive
+        for entry in self.driver.get_log("performance"):    # 監聽器運作時仍要讀出，避免紀錄累積占用記憶體
+            if watching:
+                continue
             try:
                 msg = json.loads(entry["message"]).get("message", {})
             except (KeyError, ValueError):
@@ -152,7 +169,9 @@ class UC(BaseBrowser):
                 item = {"url": url, "method": req.get("method"), "headers": req.get("headers") or {},
                         "type": msg["params"].get("type"), "document_url": msg["params"].get("documentURL", "")}
                 found.append(item)
-                self._network_log.append(item)
+        if watching:
+            found = self._watcher.drain()      # 涵蓋主頁面、iframe（含跨網站）與 Worker
+        self._network_log.extend(found)
         return found
 
     def get_network_requests(self) -> list:
