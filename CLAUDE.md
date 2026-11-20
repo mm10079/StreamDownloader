@@ -86,7 +86,7 @@ python -m pip wheel . --no-deps -w dist                   # → dist/streamdl-<�
 
 已發布 v0.5.2（瀏覽器監控可擷取跨網站 iframe / Web Worker 的請求）。
 
-**main 上有尚未 commit 的修改**（在其他工作階段完成，測試全數通過，尚未發布）：
+**main 上已 commit、但尚未發布成 exe / Release 的修改**（commit `4ac76ba`，測試全數通過）：
 - 固定瀏覽器設定檔預設開啟（`%LOCALAPPDATA%\StreamDownloader\chrome`；`--chrome-profile none` 改用暫存設定檔），新增 `driver/browser/profile.py`
 - 同時需要多個瀏覽器時，後續瀏覽器使用設定檔副本（含擴充功能，登入 cookies 以 CDP 複製）
 - SINGULAR LIVE：多個視角各用一個瀏覽器同時進入直播間；視窗標題標記視角；區域限制時以瀏覽器網路偵測 VPN 是否已連上並自動重新進入
