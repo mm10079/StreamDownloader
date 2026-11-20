@@ -8,7 +8,7 @@
 - HLS（m3u8）/ DASH（mpd）串流下載器：直播監控、斷點續傳、回溯較早片段、AES-128 / CENC 解密、ffmpeg 合併。
 - 網站適配器：ZAN-LIVE、SINGULAR LIVE、Twitter（X）Space；沒有適配器時以「直接網址」或「瀏覽器監控」處理。
 - 形式：CLI（`streamdl` / `python -m streamdl`）、Windows exe（內嵌 ffmpeg）、Python 套件（`streamdl.download()`）。
-- Repo：`github.com/mm10079/StreamDownloader`（私有）。目前版本 **0.5.2**（`streamdl/__init__.py` 是唯一的版本來源，`setup.py` 會讀取）。
+- Repo：`github.com/mm10079/StreamDownloader`（私有）。目前版本 **0.5.3**（`streamdl/__init__.py` 是唯一的版本來源，`setup.py` 會讀取）。
 - 舊版專案（僅供參考，不再開發）：`M:\自製資料\開發中\專案進行中\m3u8下載器`。
 
 ## 新設備環境設定
@@ -84,9 +84,7 @@ python -m pip wheel . --no-deps -w dist                   # → dist/streamdl-<�
 
 ## 目前狀態（2026-11-20）
 
-已發布 v0.5.2（瀏覽器監控可擷取跨網站 iframe / Web Worker 的請求）。
-
-**main 上已 commit、但尚未發布成 exe / Release 的修改**（commit `4ac76ba`，測試全數通過）：
+已發布 v0.5.3。相較 v0.5.2（瀏覽器監控可擷取跨網站 iframe / Web Worker 的請求），v0.5.3 包含：
 - 固定瀏覽器設定檔預設開啟（`%LOCALAPPDATA%\StreamDownloader\chrome`；`--chrome-profile none` 改用暫存設定檔），新增 `driver/browser/profile.py`
 - 同時需要多個瀏覽器時，後續瀏覽器使用設定檔副本（含擴充功能，登入 cookies 以 CDP 複製）
 - SINGULAR LIVE：多個視角各用一個瀏覽器同時進入直播間；視窗標題標記視角；區域限制時以瀏覽器網路偵測 VPN 是否已連上並自動重新進入
