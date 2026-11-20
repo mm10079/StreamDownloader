@@ -12,15 +12,38 @@ from ..base_driver import BaseBrowser, is_media_url
 Chrome.__del__ = lambda self: None
 
 
+_VERSION_NAME = re.compile(r"^(\d+)\.\d+\.\d+\.\d+(?:\.manifest)?$")
+
+
+def _version_from_folder(binary: str) -> Optional[int]:
+    """Windows 的 Chrome 旁有以版本命名的資料夾（例如 157.0.8103.79），攜帶版則是 157.0.8103.79.manifest；
+    不需執行任何程式。更新後新舊版本資料夾可能並存，取最大者"""
+    try:
+        names = os.listdir(os.path.dirname(binary))
+    except OSError:
+        return None
+    majors = [int(m.group(1)) for n in names if (m := _VERSION_NAME.match(n))]
+    return max(majors) if majors else None
+
+
+def _powershell() -> str:
+    """以絕對路徑呼叫，避免 PATH 中沒有 PowerShell 時讀不到版本"""
+    path = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "WindowsPowerShell", "v1.0",
+                        "powershell.exe")
+    return path if os.path.isfile(path) else "powershell"
+
+
 def chrome_major_version(binary: Optional[str]) -> Optional[int]:
     """讀取 Chrome 執行檔的主版本號；uc 預設下載最新 ChromeDriver，與已安裝版本不同時會無法啟動"""
     binary = binary or find_chrome_executable()
     if not binary or not os.path.isfile(binary):
         return None
+    if os.name == "nt" and (major := _version_from_folder(binary)):
+        return major
     try:
         if os.name == "nt":
             out = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", f"(Get-Item -LiteralPath '{binary}').VersionInfo.ProductVersion"],
+                [_powershell(), "-NoProfile", "-Command", f"(Get-Item -LiteralPath '{binary}').VersionInfo.ProductVersion"],
                 capture_output=True, text=True, timeout=15).stdout
         else:
             out = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=15).stdout
