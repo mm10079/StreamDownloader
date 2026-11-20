@@ -128,3 +128,53 @@ def test_stop_event_ends_watch():
 def test_refuses_without_browser():
     with pytest.raises(browser_watch.BrowserWatchError):
         asyncio.run(BrowserWatchExtractor().extract("", make_ctx(ScriptedBrowser([]), browser="never")))
+
+
+def test_prepares_site_once_on_official_page(monkeypatch):
+    """進入支援網站的任何頁面（例如首頁）就先準備（自動登入），每個網站只一次"""
+    from streamdl.extractor.adapters.singular_live.extractor import SingularLiveExtractor
+    calls = []
+
+    async def fake_prepare(self, url, browser, ctx):
+        calls.append(url)
+
+    monkeypatch.setattr(SingularLiveExtractor, "prepare_browser", fake_prepare)
+    top = "https://singular-live.thinkr.jp/zh/"
+    browser = ScriptedBrowser([(top, []), (top + "mypage", [])])
+
+    async def main():
+        ctx = make_ctx(browser)
+        asyncio.get_running_loop().call_later(0.2, ctx.stop.set)
+        return await BrowserWatchExtractor().extract("", ctx)
+
+    asyncio.run(main())
+    assert calls == [top]
+
+
+def test_site_extractor_reuses_watch_browser(monkeypatch):
+    """需要固定設定檔的提取器直接沿用監控瀏覽器（不重開，擴充功能與登入保留）"""
+    from streamdl.extractor.adapters.singular_live.extractor import SingularLiveExtractor
+    got = {}
+
+    async def fake_prepare(self, url, browser, ctx):
+        pass
+
+    async def fake_extract(self, url, ctx):
+        got["browser"] = await ctx.new_browser(headless=False, profile=True)
+        return MediaJob(title="sl")
+
+    monkeypatch.setattr(SingularLiveExtractor, "prepare_browser", fake_prepare)
+    monkeypatch.setattr(SingularLiveExtractor, "extract", fake_extract)
+    detail = "https://singular-live.thinkr.jp/zh/event/detail/01a0998e-70b2-73b3-a614-d5ad6d6e11bf"
+    browser = ScriptedBrowser([(detail, [])])
+    ctx = ExtractContext(options=Options(), sessions=SessionManager())
+
+    async def first(headless=None, profile=False):
+        """監控用瀏覽器；之後還原為真正的 new_browser，讓提取器走交接流程"""
+        ctx.browsers.append(browser)
+        ctx.new_browser = ExtractContext.new_browser.__get__(ctx)
+        return browser
+
+    ctx.new_browser = first
+    job = asyncio.run(BrowserWatchExtractor().extract("", ctx))
+    assert job.title == "sl" and got["browser"] is browser and not browser.closed

@@ -86,18 +86,16 @@ set STREAMDL_PASSWORD=密碼
 
 1. 開啟瀏覽器後自行登入、前往播放頁面並開始播放。
 2. 偵測到 m3u8 / mpd 時會在終端機詢問「下載這個串流？」。
-3. 若前往的是支援的網站，會自動交給該網站的流程處理（含自動登入）。
+3. 進入支援的網站（任何頁面，例如首頁）時會先自動登入；前往活動 / 播放頁面後，交給該網站的流程處理，並沿用同一個瀏覽器（不重開）。
 4. 下載期間請保持瀏覽器開啟。
 
 ### 固定瀏覽器設定檔（`--chrome-profile`）
 
-預設每次開啟的瀏覽器都是全新的設定檔。指定固定的設定檔資料夾後，**登入狀態與自行安裝的擴充功能（例如 VPN）都會保留**：
+瀏覽器預設使用固定的設定檔（`%LOCALAPPDATA%\StreamDownloader\chrome`），**登入狀態與自行安裝的擴充功能（例如 VPN）在重新執行後都會保留**。第一次使用時在開啟的瀏覽器中安裝需要的擴充功能即可。
 
-```bash
-StreamDownloader.exe "網址" --chrome-profile "%LOCALAPPDATA%\StreamDownloader\chrome"
-```
-
-第一次使用時在開啟的瀏覽器中安裝需要的擴充功能，之後每次執行都會沿用。同一個設定檔同時只能由一個瀏覽器使用，執行前請先關閉以該設定檔開啟的 Chrome。
+- 同一個設定檔同時只能由一個 Chrome 使用。需要多個瀏覽器時（例如 SINGULAR LIVE 多視角各自一個），後續的瀏覽器會自動使用**設定檔副本**（含擴充功能與登入 cookies），結束後刪除。
+- 擴充功能本身的連線（例如 VPN 是否已連上）可能需要在每個瀏覽器中各自開啟。
+- 改用其他資料夾：`--chrome-profile "D:\chrome-profile"`；每次都用全新的暫存設定檔：`--chrome-profile none`。
 
 ### 加密內容
 
@@ -147,7 +145,7 @@ StreamDownloader.exe "https://example.com/manifest.mpd" --key KID:KEY
 | `--wait` / `--no-wait` | 開 | 直播尚未開始時等待開播 |
 | `--browser` | auto | `auto` 需要時才開、`always`、`never` 不開瀏覽器 |
 | `--chrome-path` | 自動尋找 | Chrome 執行檔路徑 |
-| `--chrome-profile` | | 固定的瀏覽器設定檔資料夾（保留登入與擴充功能） |
+| `--chrome-profile` | | 固定的瀏覽器設定檔資料夾（預設 `%LOCALAPPDATA%\StreamDownloader\chrome`；`none` 為暫存設定檔） |
 | `--headless` / `--no-headless` | 關 | 瀏覽器無頭模式（需要手動登入或操作時無效） |
 | `--keep-browser` / `--no-keep-browser` | 開 | 全部任務結束後保持瀏覽器開啟，按 Enter 才關閉 |
 | `--aria2-rpc` / `--aria2-secret` | | aria2 RPC 位址與密鑰（需先啟動 `aria2c --enable-rpc`） |

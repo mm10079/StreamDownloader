@@ -114,6 +114,7 @@ class SingularMock(BaseHTTPRequestHandler):
     owned: list = []
     play_visitors: list = []
     uliza_requests: list = []
+    event: dict = {}
 
     def log_message(self, *args):
         pass
@@ -141,7 +142,8 @@ class SingularMock(BaseHTTPRequestHandler):
         detail = f"/zh/event/detail/{EVENT_ID}"
         if path == detail:
             notice = "<p>本活动仅限日本国内播放，日本境外无法观看，敬请谅解。</p>" if "blocked" in url.query else ""
-            return self._send(200, detail_html(sample("live_ended_with_archive")).replace("<body>", "<body>" + notice))
+            return self._send(200, detail_html(self.event or sample("live_ended_with_archive"))
+                              .replace("<body>", "<body>" + notice))
         if path == "/zh/login":
             return self._send(200, '<input id="login-email"><input id="login-password">'
                                    '<button class="login-email-submit">登录</button>')
@@ -211,10 +213,11 @@ class UserBrowser(FakeBrowser):
 def singular(monkeypatch):
     monkeypatch.setattr(sl_extractor, "ROOM_LOAD", 0)
     monkeypatch.setattr(sl_extractor, "REMIND_EVERY", 0)
+    monkeypatch.setattr(sl_extractor, "PROBE_EVERY", 0.01)
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), SingularMock)
     SingularMock.base = f"http://127.0.0.1:{httpd.server_address[1]}"
     SingularMock.vpn, SingularMock.owned = False, [TICKET]
-    SingularMock.play_visitors, SingularMock.uliza_requests = [], []
+    SingularMock.play_visitors, SingularMock.uliza_requests, SingularMock.event = [], [], {}
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     yield SingularMock.base
     httpd.shutdown()
@@ -229,6 +232,9 @@ class AutoLoginBrowser(UserBrowser):
 
     def execute_async_script(self, script, *args):
         type(self).scripts.append(script)
+        if "fetch(url" in script:               # 偵測是否可進入直播間（不換頁）
+            r = self.client.get(args[0])
+            return {"url": str(r.url), "status": r.status_code, "text": r.text}
         if "login-email" in script and self.url.endswith("/zh/login"):
             email, password = args
             cls = type(self)
@@ -244,14 +250,16 @@ class AutoLoginBrowser(UserBrowser):
         return {"state": "no-form", "turnstile": False}
 
 
-def run_singular(base, tmp_path, browser_cls=None, **opts):
+def run_singular(base, tmp_path, browser_cls=None, extra_cls=None, **opts):
+    """browser_cls：第一個瀏覽器；extra_cls：之後每次 new_browser 都開新的（多視角）"""
     async def main():
         pipe = Pipeline(Options(output=tmp_path, merge=False, **opts))
         browser = (browser_cls or UserBrowser)()
 
         async def new_browser(headless=None, profile=False):
-            pipe.ctx.browsers.append(browser)
-            return browser
+            b = browser if not pipe.ctx.browsers or extra_cls is None else extra_cls()
+            pipe.ctx.browsers.append(b)
+            return b
 
         pipe.ctx.new_browser = new_browser
         urls = SingularUrls(domain=base, uliza=base + "/uliza?name={name}&playerobjectname=player")
@@ -326,6 +334,89 @@ def test_auto_login_wrong_password_falls_back_to_manual(singular, tmp_path, monk
     AutoLoginBrowser.pending_waits, AutoLoginBrowser.ignored_clicks = 0, 0
     with pytest.raises(pages.SingularError, match="等待登入逾時"):
         run_singular(singular, tmp_path, AutoLoginBrowser, account="me@example.com", password="wrong")
+
+
+def test_two_views_use_separate_browsers(singular, tmp_path):
+    """兩個視角 → 兩個瀏覽器各自登入並進入自己的直播間"""
+    event = sample("live_ended_with_archive")
+    event["tickets"][0]["contents"] = [
+        {"id": "01a00000-0000-0000-0000-00000000000a", "type": "archive", "uliza_content_id": "VIEW_A", "label": "通常"},
+        {"id": "01a00000-0000-0000-0000-00000000000b", "type": "archive", "uliza_content_id": "VIEW_B", "label": "定点"},
+    ]
+    SingularMock.event = event
+    AutoLoginBrowser.scripts, AutoLoginBrowser.pending_waits, AutoLoginBrowser.ignored_clicks = [], 0, 0
+    opened = []
+
+    class Extra(AutoLoginBrowser):
+        def __init__(self):
+            super().__init__()
+            opened.append(self)
+
+    job, ok = run_singular(singular, tmp_path, AutoLoginBrowser, Extra, account="me@example.com", password="pw")
+    assert ok and sorted(s.title for s in job.streams) == ["定点", "通常"]
+    assert len(opened) == 1 and opened[0].last_play.endswith("00000000000b")     # 第二個視角在另一個瀏覽器
+    assert sorted(SingularMock.uliza_requests) == ["VIEW_A", "VIEW_B"]
+    assert len({s.session_id for s in job.streams}) == 2                          # 各自的 session
+
+
+def test_prepare_browser_logs_in_on_official_page(singular):
+    """瀏覽器監控中進入官網首頁 → 自動登入後回到原頁面"""
+    AutoLoginBrowser.scripts, AutoLoginBrowser.pending_waits, AutoLoginBrowser.ignored_clicks = [], 0, 0
+    browser = AutoLoginBrowser()
+    page = singular + "/zh/"
+
+    async def main():
+        pipe = Pipeline(Options(account="me@example.com", password="pw"))
+        urls = SingularUrls(domain=singular, uliza=singular + "/uliza?name={name}")
+        try:
+            browser.goto(page)
+            await SingularLiveExtractor(urls).prepare_browser(page, browser, pipe.ctx)
+        finally:
+            await pipe.sessions.aclose()
+
+    asyncio.run(main())
+    assert any(c.name == "sl_session" for c in browser.client.cookies.jar)
+    assert browser.url == page and "logout-button" in browser.page
+
+
+def test_site_regex_matches_any_official_page():
+    ext = SingularLiveExtractor()
+    assert ext.match_site("https://singular-live.thinkr.jp/zh/")
+    assert ext.match_site("https://singular-live.thinkr.jp/ja/mypage")
+    assert not ext.match("https://singular-live.thinkr.jp/zh/")      # 首頁不交接，只做登入
+
+
+class VpnOnlyBrowser(AutoLoginBrowser):
+    """使用者只開 VPN、不手動進入直播間：被擋幾次偵測後 VPN 才連上"""
+    probes = 0
+    labels: list = []
+
+    @property
+    def current_url(self):
+        return self.url
+
+    def set_label(self, label):
+        type(self).labels.append(label)
+
+    def execute_async_script(self, script, *args):
+        if "fetch(url" in script:
+            cls = type(self)
+            cls.probes += 1
+            if cls.probes >= 3:
+                SingularMock.vpn = True             # 第 3 次偵測時 VPN 已連上
+            r = self.client.get(args[0])
+            return {"url": str(r.url), "status": r.status_code, "text": r.text}
+        return super().execute_async_script(script, *args)
+
+
+def test_auto_reenters_room_after_vpn_connects(singular, tmp_path, monkeypatch):
+    monkeypatch.setattr(sl_extractor, "PROBE_EVERY", 0.01)
+    VpnOnlyBrowser.probes, VpnOnlyBrowser.labels = 0, []
+    AutoLoginBrowser.pending_waits, AutoLoginBrowser.ignored_clicks = 0, 0
+    job, ok = run_singular(singular, tmp_path, VpnOnlyBrowser, account="me@example.com", password="pw")
+    assert ok and len(job.streams) == 1
+    assert VpnOnlyBrowser.probes == 3                           # 偵測到可進入後自動進入，不再偵測
+    assert VpnOnlyBrowser.labels == ["SINGULAR LIVE TV（仮題） アーカイブ"]
 
 
 def test_login_state_buttons():

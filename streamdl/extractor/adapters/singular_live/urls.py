@@ -54,3 +54,12 @@ def parse_play(url: str) -> Optional[tuple[str, str, str]]:
     """(lang, ticket_id, content_id)"""
     m = _PLAY_RE.search(url)
     return (m.group("lang"), m.group("ticket"), m.group("content")) if m else None
+
+
+_LANG_RE = re.compile(DOMAIN_RE + _LANG + r"(?:[/?#]|$)")
+
+
+def parse_lang(url: str) -> Optional[str]:
+    """網站任何頁面網址中的語系，例如 /zh/、/ja/"""
+    m = _LANG_RE.search(url)
+    return m.group("lang") if m else None

@@ -49,6 +49,7 @@ class BrowserWatchExtractor(InfoExtractor):
         await log.info("已開啟瀏覽器：請前往播放頁面並開始播放。偵測到串流時會在此詢問是否下載（Ctrl+C 結束）")
 
         checked_pages: set[str] = set()
+        prepared: set[str] = set()      # 已呼叫過 prepare_browser 的提取器
         seen: set[str] = set()
         while not ctx.stop.is_set():
             try:
@@ -60,12 +61,11 @@ class BrowserWatchExtractor(InfoExtractor):
             # 1. 頁面符合網站專用提取器 → 交接
             if current not in checked_pages:
                 checked_pages.add(current)
+                await self._prepare_site(current, browser, ctx, prepared)
                 site = self._site_extractor(current)
                 if site is not None:
                     await log.info(f"偵測到 {site.config.name} 頁面，交由專用提取器處理：{current}")
-                    # 關閉監控用瀏覽器：避免殘留空白視窗、與專用提取器的直播間 session 互相干擾，並釋放固定設定檔
-                    await ctx.close_browser(browser)
-                    return await site.extract(current, ctx)
+                    return await self._handoff(site, current, browser, ctx)
 
             # 2. 新的串流請求 → 詢問
             accepted = []
@@ -85,6 +85,32 @@ class BrowserWatchExtractor(InfoExtractor):
 
         await log.info("已停止監控")
         return MediaJob()
+
+    @staticmethod
+    async def _prepare_site(url: str, browser, ctx: ExtractContext, prepared: set[str]) -> None:
+        """使用者進入支援的網站（任何頁面，例如首頁）時先讓該網站的提取器處理，例如自動登入"""
+        from .. import load_extractors
+        for ext in load_extractors():
+            name = ext.config.name or type(ext).__name__
+            if name in prepared or not ext.match_site(url):
+                continue
+            prepared.add(name)
+            try:
+                await ext.prepare_browser(url, browser, ctx)
+            except Exception as e:
+                await log.warning(f"{name}：瀏覽器準備失敗（{type(e).__name__}: {e}），請手動登入")
+
+    @staticmethod
+    async def _handoff(site: InfoExtractor, url: str, browser, ctx: ExtractContext) -> MediaJob:
+        """監控用瀏覽器交給專用提取器沿用（不重開，保留登入、擴充功能與 VPN 連線）；
+        提取器沒有使用時關閉，避免殘留空白視窗並釋放固定設定檔"""
+        ctx.handoff = browser
+        try:
+            return await site.extract(url, ctx)
+        finally:
+            if ctx.handoff is browser:
+                ctx.handoff = None
+                await ctx.close_browser(browser)
 
     @staticmethod
     def _site_extractor(url: str) -> Optional[InfoExtractor]:

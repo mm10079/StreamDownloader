@@ -63,6 +63,18 @@ class BaseBrowser(ABC):
         """在頁面內執行非同步 JS（BrowserFetcher 用來以頁面身分下載）"""
         pass
 
+    def set_label(self, label: str) -> None:
+        """在視窗標題標記用途（例如視角名稱）；不支援時略過"""
+        return None
+
+    def export_cookies(self) -> list[dict]:
+        """所有網域的 cookies（複製登入狀態給其他瀏覽器用）；不支援時回傳空清單"""
+        return []
+
+    def import_cookies(self, cookies: list[dict]) -> int:
+        """寫入 export_cookies 的結果，回傳成功筆數"""
+        return 0
+
     # ==================== 串流網路攔截 ====================
     @abstractmethod
     def drain_media_requests(self) -> list[dict]:

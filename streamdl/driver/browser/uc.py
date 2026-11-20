@@ -35,6 +35,8 @@ class UC(BaseBrowser):
         self.driver: Optional[Chrome] = None
         self.options: Optional[ChromeOptions] = None
         self.user_data_dir: Optional[str] = None    # 固定設定檔（保留登入與擴充功能）；None 為暫存設定檔
+        self.temp_profile = False                   # user_data_dir 為設定檔副本，關閉時刪除
+        self._label_script: Optional[str] = None    # 標題標記的 CDP 腳本 identifier
         self._watcher = None                        # CdpMediaWatcher
         self._network_log: list = []  # 用於儲存 CDP 攔截到的網路請求
 
@@ -89,6 +91,10 @@ class UC(BaseBrowser):
             self.driver.quit()
             self.driver = None
         self._network_log.clear()
+        if self.temp_profile and self.user_data_dir:
+            from .profile import remove_profile
+            remove_profile(self.user_data_dir)
+            self.temp_profile = False
 
     def goto(self, url: str):
         """導航到指定的直播視角 URL"""
@@ -147,6 +153,75 @@ class UC(BaseBrowser):
         if self.driver is None:
             raise RuntimeError("瀏覽器尚未啟動，請先呼叫 start() 方法")
         return self.driver.execute_async_script(script, *args)
+
+    # 在分頁標題（即視窗標題）前加上【標記】；頁面換頁或 SPA 改標題後每秒補回
+    _LABEL_JS = """(() => {
+  const tag = %s;
+  const apply = () => {
+    const base = (document.title || '').replace(/^【[^】]*】\\s*/, '');
+    if (document.title !== tag + base) document.title = tag + base;
+  };
+  apply();
+  document.addEventListener('DOMContentLoaded', apply);
+  setInterval(apply, 1000);
+})();"""
+
+    def set_label(self, label: str) -> None:
+        """標記這個瀏覽器（例如視角名稱），使用者才分得出哪個視窗要做什麼"""
+        if self.driver is None:
+            raise RuntimeError("瀏覽器尚未啟動，請先呼叫 start() 方法")
+        script = self._LABEL_JS % json.dumps(f"【{label}】 ")
+        if self._label_script:
+            try:
+                self.driver.execute_cdp_cmd("Page.removeScriptToEvaluateOnNewDocument",
+                                            {"identifier": self._label_script})
+            except Exception:
+                pass
+        result = self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": script})
+        self._label_script = result.get("identifier")
+        try:
+            self.driver.execute_script(script)      # 目前已開啟的頁面
+        except Exception:
+            pass
+
+    # 可傳給 Network.setCookie 的欄位（Storage.getCookies 回傳的其他欄位如 size、session 不接受）
+    _COOKIE_FIELDS = ("name", "value", "domain", "path", "secure", "httpOnly", "sameSite", "expires",
+                      "priority", "sourceScheme", "sourcePort")
+
+    def export_cookies(self) -> list[dict]:
+        """所有網域的 cookies（含 httpOnly），CDP 格式"""
+        if self.driver is None:
+            raise RuntimeError("瀏覽器尚未啟動，請先呼叫 start() 方法")
+        try:
+            return self.driver.execute_cdp_cmd("Storage.getCookies", {}).get("cookies", [])
+        except Exception:
+            return self.driver.execute_cdp_cmd("Network.getAllCookies", {}).get("cookies", [])
+
+    def import_cookies(self, cookies: list[dict]) -> int:
+        """寫入 export_cookies 的結果，回傳成功筆數"""
+        if self.driver is None:
+            raise RuntimeError("瀏覽器尚未啟動，請先呼叫 start() 方法")
+        params = []
+        for c in cookies:
+            if c.get("partitionKey"):
+                continue        # 分區 cookie 的格式隨版本變動，略過
+            item = {k: c[k] for k in self._COOKIE_FIELDS if k in c}
+            if c.get("session") or not item.get("expires") or item["expires"] <= 0:
+                item.pop("expires", None)
+            params.append(item)
+        try:
+            self.driver.execute_cdp_cmd("Network.setCookies", {"cookies": params})
+            return len(params)
+        except Exception:
+            pass
+        ok = 0
+        for item in params:     # 整批失敗時逐筆寫入，略過格式不符的
+            try:
+                self.driver.execute_cdp_cmd("Network.setCookie", item)
+                ok += 1
+            except Exception:
+                pass
+        return ok
 
     def drain_media_requests(self) -> list[dict]:
         """讀出自上次呼叫後新發出的串流請求（m3u8 / mpd），含請求標頭"""
