@@ -90,6 +90,7 @@ python -m pip wheel . --no-deps -w dist                   # → dist/streamdl-<�
 - SINGULAR LIVE：多個視角各用一個瀏覽器同時進入直播間；視窗標題標記視角；區域限制時以瀏覽器網路偵測 VPN 是否已連上並自動重新進入
 - 瀏覽器監控進入 SINGULAR LIVE 官網任何頁面時先自動登入（`prepare_browser`）
 - 對應的 README、架構文件與測試（`tests/unit/test_chrome_profile.py` 等）
+- 修正：PATH 中沒有 PowerShell 時讀不到 Chrome 版本，導致下載到不相符的 ChromeDriver；改為先讀 chrome.exe 旁的版本資料夾，再以絕對路徑呼叫 PowerShell
 
 ## 已知限制 / 可能的後續工作
 
